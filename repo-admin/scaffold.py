@@ -1,4 +1,4 @@
-"""Render a new fleet repo's baseline files from ``gh-workflows/templates/``.
+"""Render a new fleet repo's baseline files from ``repo-admin/templates/``.
 
 One-shot scaffold, not an ongoing sync: it writes the shared dev-tooling files
 (hk.pkl, mise.toml, .renovaterc.json, editor/lint config) plus the workflow
@@ -28,12 +28,12 @@ from pathlib import Path
 
 import jinja2
 
-GH_WORKFLOWS = Path(__file__).resolve().parent.parent
-TEMPLATES = GH_WORKFLOWS / "templates"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATES = Path(__file__).resolve().parent / "templates"
 
-# Which of gh-workflows' OWN mise.toml [tools] each hk-config group needs.
-# Versions are never hardcoded here — they come from gh-workflows/mise.toml,
-# which Renovate keeps current as this repo's own toolchain. A scaffolded repo
+# Which of the fleet's canonical mise.toml [tools] each hk-config group needs.
+# Versions are never hardcoded here — they come from this repo's mise.toml,
+# which Renovate keeps current as the fleet's canonical toolchain. A scaffolded repo
 # then inherits `github>hugoh/renovate-config`, whose mise + hk-config regex
 # managers keep the copy current from then on.
 BASE_TOOLS = (
@@ -55,18 +55,16 @@ PYTHON_TOOLS = ("ruff", "ty")
 
 
 def _canonical_tools() -> dict[str, str]:
-    data = tomllib.loads((GH_WORKFLOWS / "mise.toml").read_text(encoding="utf-8"))
+    data = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
     return {k: v for k, v in data.get("tools", {}).items() if isinstance(v, str)}
 
 
 def _canonical_hk_versions() -> tuple[str, str]:
-    text = (GH_WORKFLOWS / "hk.pkl").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "hk.pkl").read_text(encoding="utf-8")
     hk = re.search(r"jdx/hk/releases/download/v([^/]+)/hk@", text)
     cfg = re.search(r"hugoh/hk-config/releases/download/v([^/]+)/hk-config@", text)
     if not (hk and cfg):
-        raise RuntimeError(
-            "could not read hk / hk-config versions from gh-workflows/hk.pkl"
-        )
+        raise RuntimeError("could not read hk / hk-config versions from hk.pkl")
     return hk.group(1), cfg.group(1)
 
 
@@ -317,7 +315,7 @@ async def run(args: argparse.Namespace) -> int:
     print("  - /project-setup            (jj policy + raw-git block in CLAUDE.md)")
     print("  - review, then `jj commit`")
     print("  - gh repo create hugoh/" + name + " --private --source . --push")
-    print("  - (from gh-workflows/) ./repo-admin.sh sync " + name)
+    print("  - (from fleet-tools/) ./repo-admin.sh sync " + name)
     return 0
 
 

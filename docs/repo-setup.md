@@ -6,7 +6,7 @@ files that get scaffolded once and then maintained by Renovate.
 
 ## Applied by `repo-admin` (account-wide, no per-repo work)
 
-Run from `gh-workflows/`:
+Run from `fleet-tools/`:
 
 ```text
 ./repo-admin.sh sync            # merge + protection + security
@@ -28,12 +28,12 @@ Run from `gh-workflows/`:
 | File | Purpose | Notes |
 |---|---|---|
 | `.github/workflows/hk.yml` | lint / conventional-commit check | thin caller of `hugoh/gh-workflows/.github/workflows/hk.yml` (inputs: `pre-hk`, `apt-packages`, `fetch-depth`) |
-| `.github/workflows/release.yml` | tag + GitHub release | thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`mathieudutour` + `gh release create`); **omit** if the repo isn't released |
+| `.github/workflows/release.yml` | tag + GitHub release | thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`hugoh/cog-bump` + `gh release create`); **omit** if the repo isn't released |
 | `.github/workflows/rerun-transient-failures.yml` | retry transient CI failures | optional; `workflow_run` trigger → [`hugoh/rerun-transient-failures`](https://github.com/hugoh/rerun-transient-failures) |
 | `.renovaterc.json` | dependency updates | `{"extends": ["github>hugoh/renovate-config"]}` — nothing else unless the repo needs an override |
 | `hk.pkl` | lint ruleset | `amends "package://github.com/hugoh/hk-config/..."` |
 | `mise.toml` | toolchain | repo-specific tools; `hk` line is Renovate-managed via hk-config's preset |
-| `cocogitto` | release tooling | not needed today — the reusable `release.yml` uses `mathieudutour/github-tag-action`. A future migration to `cog` is tracked separately. |
+| `cog.toml` | release tooling | not needed per-repo — the reusable `release.yml` runs `hugoh/cog-bump`, which carries the canonical fleet `cog.toml`. |
 
 ### How Renovate keeps a scaffolded repo current
 
@@ -53,8 +53,8 @@ files) or a hand-patch handles those; they're rare by design.
 ### How the templates themselves stay current
 
 `templates/` carries **no version numbers**. `repo scaffold` reads the tool
-versions out of `gh-workflows`'s own `mise.toml` and `hk.pkl` at render time —
-those are this repo's canonical toolchain, which Renovate already keeps
+versions out of `fleet-tools`'s own `mise.toml` and `hk.pkl` at render time —
+those are the fleet's canonical toolchain, which Renovate already keeps
 current here. One source of truth, no template drift, no custom managers.
 The workflow templates reference `hugoh/gh-workflows` at a ref `repo scaffold`
 resolves to the latest release; third-party actions in them (`actions/checkout`
@@ -106,7 +106,7 @@ jobs:
 ## Scaffolding a new repo
 
 ```text
-cd gh-workflows
+cd fleet-tools
 ./repo-admin.sh repo scaffold ../my-new-repo --release --tests python
 /project-setup                       # from the new repo: jj policy + CLAUDE.md
 # review, jj commit
@@ -117,7 +117,7 @@ gh repo create hugoh/my-new-repo --private --source ../my-new-repo --push
 Flags: `--release`, `--pages`, `--action` (Marketplace/action repo — adds
 `action.yml` + major-tag move), `--rerun-transient`, `--tests {none,python}`,
 `--shell`, `--apt-packages`, `--pre-hk`, `--default-branch`. `--dry-run` to
-preview. Templates live in [`../templates/`](../templates/).
+preview. Templates live in [`../repo-admin/templates/`](../repo-admin/templates/).
 
 An ongoing `repo-admin files sync` (reconcile existing repos against the
 templates, like `pages sync`) is still planned; for now a re-scaffold with

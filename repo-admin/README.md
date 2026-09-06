@@ -31,7 +31,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
 - **`repos list`** — lists repos as a table: name, default branch, private,
   fork
 - **`repo scaffold PATH [flags]`** — renders a new fleet repo's baseline
-  files from [`../templates/`](../templates/): the shared dev-tooling
+  files from [`templates/`](templates/): the shared dev-tooling
   (`hk.pkl`, `mise.toml`, `.renovaterc.json`, editor/lint config, `LICENSE`)
   plus the workflow callers the feature flags ask for (`--release`,
   `--pages`, `--action`, `--rerun-transient`), then `jj git init`. One-shot,

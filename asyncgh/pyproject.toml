@@ -24,9 +24,9 @@ classifiers = [
 dependencies = ["httpx2>=2.10", "pynacl>=1.5", "stamina>=25.2"]
 
 [project.urls]
-Homepage = "https://github.com/hugoh/gh-workflows/tree/main/asyncgh"
-Issues = "https://github.com/hugoh/gh-workflows/issues"
-Repository = "https://github.com/hugoh/gh-workflows"
+Homepage = "https://github.com/hugoh/fleet-tools/tree/main/asyncgh"
+Issues = "https://github.com/hugoh/fleet-tools/issues"
+Repository = "https://github.com/hugoh/fleet-tools"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-httpx2>=0.1", "respx>=0.21"]

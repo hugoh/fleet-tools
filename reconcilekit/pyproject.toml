@@ -23,9 +23,9 @@ classifiers = [
 dependencies = ["rich>=13"]
 
 [project.urls]
-Homepage = "https://github.com/hugoh/gh-workflows/tree/main/reconcilekit"
-Issues = "https://github.com/hugoh/gh-workflows/issues"
-Repository = "https://github.com/hugoh/gh-workflows"
+Homepage = "https://github.com/hugoh/fleet-tools/tree/main/reconcilekit"
+Issues = "https://github.com/hugoh/fleet-tools/issues"
+Repository = "https://github.com/hugoh/fleet-tools"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]

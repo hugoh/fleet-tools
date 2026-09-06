@@ -50,7 +50,7 @@ jobs:
           <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>gh-workflows docs</title>
+            <title>fleet-tools docs</title>
             <style>
               body {
                 font-family: system-ui, sans-serif;
@@ -71,7 +71,7 @@ jobs:
             </style>
           </head>
           <body>
-            <h1>gh-workflows docs</h1>
+            <h1>fleet-tools docs</h1>
             <p>API reference for this repo's published Python packages.</p>
             <ul>
               <li><a href="asyncgh/">asyncgh</a></li>
