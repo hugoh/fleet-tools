@@ -17,7 +17,7 @@ Published to PyPI as `hugoh-repokit`; imported as `repokit`.
 ## API
 
 Full API reference, generated from the docstrings:
-[hugoh.github.io/gh-workflows/repokit](https://hugoh.github.io/gh-workflows/repokit/)
+[hugoh.github.io/fleet-tools/repokit](https://hugoh.github.io/fleet-tools/repokit/)
 (rebuilt on every push that touches this package — see
 `.github/workflows/docs.yml`).
 

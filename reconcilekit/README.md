@@ -23,7 +23,7 @@ compares it to what you want, and either reports the plan or applies it.
 ## API
 
 Full API reference, generated from the docstrings:
-[hugoh.github.io/gh-workflows/reconcilekit](https://hugoh.github.io/gh-workflows/reconcilekit/)
+[hugoh.github.io/fleet-tools/reconcilekit](https://hugoh.github.io/fleet-tools/reconcilekit/)
 (rebuilt on every push that touches this package -- see
 `.github/workflows/docs.yml`).
 

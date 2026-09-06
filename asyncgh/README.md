@@ -34,7 +34,7 @@ GraphQL built in rather than bolted on.
 ## API
 
 Full API reference, generated from the docstrings:
-[hugoh.github.io/gh-workflows/asyncgh](https://hugoh.github.io/gh-workflows/asyncgh/)
+[hugoh.github.io/fleet-tools/asyncgh](https://hugoh.github.io/fleet-tools/asyncgh/)
 (rebuilt on every push that touches this package -- see
 `.github/workflows/docs.yml`).
 
