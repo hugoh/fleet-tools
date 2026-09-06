@@ -1,6 +1,5 @@
 [project]
 name = "asyncgh"
-version = "0.5.1"
 description = "Minimal async GitHub REST + GraphQL transport: auth, retry, pagination -- no generated models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,6 +19,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
+dynamic = ["version"]
 
 dependencies = ["httpx2>=2.10", "pynacl>=1.5", "stamina>=25.2"]
 
@@ -32,8 +32,26 @@ Repository = "https://github.com/hugoh/fleet-tools"
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-httpx2>=0.1", "respx>=0.21"]
 
 [build-system]
-requires = ["hatchling"]
+# setuptools-scm pinned <9: v10 moved its engine to vcs-versioning and put
+# per-package tag filtering in a [tool.setuptools_scm.tag] table. hatch-vcs 0.4.x
+# still forwards raw-options as get_version() kwargs, so under v10 `tag` errors
+# and the deprecated `git_describe_command` --match is ignored (wrong tag picked).
+# Unpin once hatch-vcs ships setuptools-scm 10 support.
+requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=8,<9"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^asyncgh-v(?P<version>.+)$"
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+root = ".."
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "asyncgh-v*"]
+local_scheme = "no-local-version"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/asyncgh/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/asyncgh"]

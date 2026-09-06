@@ -1,0 +1,43 @@
+name: release
+
+permissions:
+  contents: read
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - id: bump
+        uses: hugoh/cog-bump@1b9e077a363b1f9485e41a1df0ffd05f482c183c # v0.2.0
+        with:
+          config: cog.toml
+
+      - name: Create GitHub releases
+        if: steps.bump.outputs.tags != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGS: ${{ steps.bump.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+          done <<< "$TAGS"

@@ -1,0 +1,18 @@
+# Monorepo release config for fleet-tools, consumed by hugoh/cog-bump via the
+# `config:` input. Tag-only (disable_bump_commit): `cog bump --auto` creates a
+# `<package>-v<version>` tag for each package whose files changed since its last
+# tag, and nothing else — versions are derived from the tag at build time by
+# hatch-vcs. `repo-admin` is intentionally absent (never released).
+disable_changelog = true
+disable_bump_commit = true
+ignore_merge_commits = true
+generate_mono_repository_global_tag = false
+monorepo_version_separator = "-v"
+
+[commit_types]
+perf = { changelog_title = "Performance", bump_patch = true }
+
+[packages]
+asyncgh = { path = "asyncgh" }
+reconcilekit = { path = "reconcilekit" }
+repokit = { path = "repokit" }

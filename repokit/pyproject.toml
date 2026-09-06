@@ -1,6 +1,5 @@
 [project]
 name = "hugoh-repokit"
-version = "0.2.1"
 description = "Toolkit for scripts that operate over a GitHub account's repos: list/filter them, run an async CLI, fan work out with bounded concurrency"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +18,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
+dynamic = ["version"]
 
 dependencies = ["asyncgh>=0.2.0", "reconcilekit>=0.2.0"]
 
@@ -31,8 +31,23 @@ Repository = "https://github.com/hugoh/fleet-tools"
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
-requires = ["hatchling"]
+# setuptools-scm pinned <9: see the note in asyncgh/pyproject.toml (hatch-vcs 0.4.x
+# is not yet compatible with setuptools-scm 10's config surface).
+requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=8,<9"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^repokit-v(?P<version>.+)$"
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+root = ".."
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "repokit-v*"]
+local_scheme = "no-local-version"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/repokit/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repokit"]

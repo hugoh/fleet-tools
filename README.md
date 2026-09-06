@@ -44,7 +44,14 @@ See [`repo-admin/README.md`](repo-admin/README.md) for the full command set and
 
 ## Releases
 
-- `asyncgh`, `reconcilekit`, `hugoh-repokit` — release-please (one aggregated
-  PR, per-component tags `<pkg>-vX.Y.Z`); merging it builds and publishes to
-  PyPI via trusted publishing.
+- `asyncgh`, `reconcilekit`, `hugoh-repokit` — no PR. Every push to `main` runs
+  `cog bump --auto` (cocogitto, monorepo mode via `cog.toml`): each package
+  whose files changed since its last tag gets a new `<pkg>-vX.Y.Z` tag from its
+  Conventional Commits, plus a GitHub release. The version lives only in the
+  tag — `hatch-vcs` derives it at build time — so nothing lands back on `main`.
+  Each tag fires that package's `release-<pkg>.yml`, which builds and publishes
+  to PyPI via trusted publishing.
+- Breaking changes on a `0.x` package bump the minor, not `1.0.0`; reach
+  `1.0.0` deliberately with `cog bump --package <pkg> --version 1.0.0`, then
+  push the tag.
 - `repo-admin` — not published; run it from a checkout.

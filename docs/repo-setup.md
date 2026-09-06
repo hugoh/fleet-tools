@@ -33,7 +33,7 @@ Run from `fleet-tools/`:
 | `.renovaterc.json` | dependency updates | `{"extends": ["github>hugoh/renovate-config"]}` — nothing else unless the repo needs an override |
 | `hk.pkl` | lint ruleset | `amends "package://github.com/hugoh/hk-config/..."` |
 | `mise.toml` | toolchain | repo-specific tools; `hk` line is Renovate-managed via hk-config's preset |
-| `cog.toml` | release tooling | not needed per-repo — the reusable `release.yml` runs `hugoh/cog-bump`, which carries the canonical fleet `cog.toml`. |
+| `cog.toml` | release tooling | not needed for a single-package repo — the reusable `release.yml` runs `hugoh/cog-bump`, which carries the canonical fleet `cog.toml`. A **monorepo** (like `fleet-tools` itself) keeps its own `cog.toml` with a `[packages]` table and passes it via `cog-bump`'s `config:` input; see `fleet-tools`'s in-repo `release.yml`. |
 
 ### How Renovate keeps a scaffolded repo current
 
