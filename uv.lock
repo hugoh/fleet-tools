@@ -29,7 +29,6 @@ wheels = [
 
 [[package]]
 name = "asyncgh"
-version = "0.5.0"
 source = { editable = "asyncgh" }
 dependencies = [
     { name = "httpx2" },
@@ -254,7 +253,6 @@ wheels = [
 
 [[package]]
 name = "hugoh-repokit"
-version = "0.2.0"
 source = { editable = "repokit" }
 dependencies = [
     { name = "asyncgh" },
@@ -573,7 +571,6 @@ wheels = [
 
 [[package]]
 name = "reconcilekit"
-version = "0.4.0"
 source = { editable = "reconcilekit" }
 dependencies = [
     { name = "rich" },

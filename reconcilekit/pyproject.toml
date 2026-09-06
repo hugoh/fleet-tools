@@ -1,6 +1,5 @@
 [project]
 name = "reconcilekit"
-version = "0.4.1"
 description = "A tiny stateless fetch-diff-apply reconciliation kernel for fleet-wide config tools"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +18,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
+dynamic = ["version"]
 
 dependencies = ["rich>=13"]
 
@@ -31,8 +31,23 @@ Repository = "https://github.com/hugoh/fleet-tools"
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
-requires = ["hatchling"]
+# setuptools-scm pinned <9: see the note in asyncgh/pyproject.toml (hatch-vcs 0.4.x
+# is not yet compatible with setuptools-scm 10's config surface).
+requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=8,<9"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "^reconcilekit-v(?P<version>.+)$"
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+root = ".."
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "reconcilekit-v*"]
+local_scheme = "no-local-version"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/reconcilekit/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reconcilekit"]
