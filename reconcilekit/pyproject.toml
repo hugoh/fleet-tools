@@ -28,13 +28,27 @@ Issues = "https://github.com/hugoh/fleet-tools/issues"
 Repository = "https://github.com/hugoh/fleet-tools"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-cov>=7"]
 
 [build-system]
 # setuptools-scm pinned <9: see the note in asyncgh/pyproject.toml (hatch-vcs 0.4.x
 # is not yet compatible with setuptools-scm 10's config surface).
 requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=8,<9"]
 build-backend = "hatchling.build"
+
+[tool.coverage.run]
+branch = true
+source = ["src/reconcilekit"]
+omit = ["*/_version.py"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
 
 [tool.hatch.version]
 source = "vcs"
@@ -53,5 +67,6 @@ version-file = "src/reconcilekit/_version.py"
 packages = ["src/reconcilekit"]
 
 [tool.pytest.ini_options]
+addopts = ["--cov", "--cov-report=term-missing"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
