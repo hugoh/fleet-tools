@@ -1387,9 +1387,9 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # pages sync
 #
-# Sets each repo's GitHub Pages custom domain from config/pages-domains.yaml
-# -- the single source of truth also read by iac/cloudflare's OpenTofu
-# config to generate the matching CNAME/verification DNS records. Unlike the other
+# Sets each repo's GitHub Pages custom domain from pages-domains.yaml -- the
+# single source of truth, also consumed by the OpenTofu config that
+# generates the matching CNAME/verification DNS records. Unlike the other
 # commands, this doesn't apply the same setting account-wide: only repos
 # listed in the mapping are touched. The repo's homepage URL is also pointed
 # at https://<domain> so the "website" link tracks the custom domain.

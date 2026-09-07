@@ -121,7 +121,18 @@ __all__ = [  # re-exported from asyncgh / reconcilekit / repokit for repo-admin'
 ]
 
 LIB_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = LIB_DIR / "config"
+
+
+def _config_dir() -> Path:
+    """Where the fleet config files live. Defaults to `config/` next to this
+    module; `REPO_ADMIN_CONFIG_DIR` points it elsewhere, for keeping the
+    config data in a separate repo with its own wrapper.
+    """
+    override = os.environ.get("REPO_ADMIN_CONFIG_DIR")
+    return Path(override).expanduser().resolve() if override else LIB_DIR / "config"
+
+
+CONFIG_DIR = _config_dir()
 PAGES_DOMAINS_FILE = CONFIG_DIR / "pages-domains.yaml"
 BRANCH_PROTECTION_EXCLUDE_FILE = CONFIG_DIR / "branch-protection-exclude.yaml"
 FORKS_INCLUDE_FILE = CONFIG_DIR / "forks-include.yaml"
@@ -131,11 +142,23 @@ VARIABLES_ENC_FILE = CONFIG_DIR / "variables.enc.yaml"
 SOPS_CONFIG_FILE = CONFIG_DIR / ".sops.yaml"
 
 
+def _load_yaml(path: Path):
+    """Parsed YAML from `path`, or None if the file isn't there. The plaintext
+    config files are all optional -- a config dir that omits one just means
+    that policy is empty (unlike the sops files, whose absence is an error).
+    """
+    try:
+        return yaml.safe_load(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
 def _yaml_name_set(path: Path) -> set[str]:
     """Repo names from a YAML sequence file (one `- name` per line, `#`
-    comments native to YAML). An empty or absent list yields an empty set.
+    comments native to YAML). An empty, absent, or comment-only file yields
+    an empty set.
     """
-    return set(yaml.safe_load(path.read_text()) or [])
+    return set(_load_yaml(path) or [])
 
 
 def default_include_forks() -> set[str]:
@@ -176,17 +199,17 @@ def default_branch_protection_exclude() -> set[str]:
 
 def default_pages_domains() -> dict[str, str]:
     """Repo -> GitHub Pages custom domain mapping, read from
-    pages-domains.yaml -- the single source of truth also read by
-    iac/cloudflare's OpenTofu config to generate matching DNS records.
+    pages-domains.yaml -- the single source of truth, also consumed by the
+    OpenTofu config that generates the matching DNS records.
     """
-    return yaml.safe_load(PAGES_DOMAINS_FILE.read_text()) or {}
+    return _load_yaml(PAGES_DOMAINS_FILE) or {}
 
 
 def _load_repo_map(path: Path) -> dict[str, list[str]]:
     """The `name -> {repos: [...]}` shape of variables.yaml, flattened to
     `name -> [repos]`.
     """
-    raw = yaml.safe_load(path.read_text()) or {}
+    raw = _load_yaml(path) or {}
     return {name: cfg.get("repos", []) for name, cfg in raw.items()}
 
 
@@ -243,7 +266,7 @@ def _decrypt_enc(path: Path) -> dict:
     if not path.exists():
         raise GhError(
             f"{path.name} not found -- create it with `sops` "
-            "(see repo-admin/config/.sops.yaml)"
+            "(see the `.sops.yaml` next to it)"
         )
     try:
         result = subprocess.run(
