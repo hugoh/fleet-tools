@@ -33,10 +33,15 @@ there is one source of truth and no template drift.
 
 ## Usage
 
+The fleet config data lives in a separate repo; drive `repo-admin` from the
+wrapper there (it exports `REPO_ADMIN_CONFIG_DIR` and calls into this
+checkout). For a config-free command, run the module directly:
+
 ```text
 uv sync
-./repo-admin.sh sync              # merge + protection + security, fleet-wide
-./repo-admin.sh repo scaffold ../new-repo --release --tests python
+cd repo-admin
+uv run repo_admin.py repos list
+uv run repo_admin.py repo scaffold ~/Code/new-repo --release --tests python
 ```
 
 See [`repo-admin/README.md`](repo-admin/README.md) for the full command set and

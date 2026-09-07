@@ -6,11 +6,14 @@ files that get scaffolded once and then maintained by Renovate.
 
 ## Applied by `repo-admin` (account-wide, no per-repo work)
 
-Run from `fleet-tools/`:
+The fleet config lives in [`hugoh/iac`](https://github.com/hugoh/iac) under
+`github/config/`. Run from there — `github/repo-admin.sh` exports
+`REPO_ADMIN_CONFIG_DIR` and calls this checkout:
 
 ```text
-./repo-admin.sh sync            # merge + protection + security
-./repo-admin.sh pages sync      # only for repos in config/pages-domains.yaml
+cd ~/Code/iac
+./github/repo-admin.sh sync         # merge + protection + security
+./github/repo-admin.sh pages sync   # only for repos in pages-domains.yaml
 ```
 
 - **`merge sync`** — auto-merge, delete-branch-on-merge, PR-branch auto-update.
@@ -106,12 +109,12 @@ jobs:
 ## Scaffolding a new repo
 
 ```text
-cd fleet-tools
-./repo-admin.sh repo scaffold ../my-new-repo --release --tests python
+cd ~/Code/fleet-tools/repo-admin
+uv run repo_admin.py repo scaffold ~/Code/my-new-repo --release --tests python
 /project-setup                       # from the new repo: jj policy + CLAUDE.md
 # review, jj commit
-gh repo create hugoh/my-new-repo --private --source ../my-new-repo --push
-./repo-admin.sh sync my-new-repo     # merge / protection / security
+gh repo create hugoh/my-new-repo --private --source ~/Code/my-new-repo --push
+cd ~/Code/iac && ./github/repo-admin.sh sync my-new-repo
 ```
 
 Flags: `--release`, `--pages`, `--action` (Marketplace/action repo — adds

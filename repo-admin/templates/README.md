@@ -1,6 +1,6 @@
 # templates/
 
-Source for `repo-admin.sh repo scaffold` — the baseline files a new fleet repo
+Source for `repo_admin.py repo scaffold` — the baseline files a new fleet repo
 gets. See [`../../docs/repo-setup.md`](../../docs/repo-setup.md).
 
 ## Layout

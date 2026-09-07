@@ -302,8 +302,9 @@ def write_enc_file(path: Path, values: dict) -> None:
     override tells sops to match rules as if encrypting `path` itself.
     --config is required too: sops discovers .sops.yaml by walking up from
     the *current working directory*, not from the (overridden) file path,
-    so without it this breaks whenever repo-admin.sh is invoked from
-    outside repo-admin/.
+    so without it this breaks whenever the CLI is invoked from anywhere but
+    the config dir itself (which is the normal case -- the config lives in a
+    separate repo).
     """
     try:
         result = subprocess.run(
