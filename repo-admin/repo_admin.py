@@ -1036,11 +1036,18 @@ def _plan_gated_result(repo: Repo, *, tag: Tag | None = None) -> RepoResult:
 async def _create_protection_ruleset(
     owner: str, repo: Repo, contexts: list[str], dry_run: bool
 ) -> RepoResult:
-    """A plan-gated private repo can't use classic branch protection, but
-    repository rulesets are available on every plan. Create one enforcing the
-    same gate. A later `protection sync` run finds this ruleset via
-    `_matching_rulesets` (it carries a `required_status_checks` rule) and takes
-    the normal ruleset path, so this only ever creates -- never updates.
+    """A plan-gated private repo can't use classic branch protection.
+    Repository rulesets are a separate feature that's available on *some*
+    plans where classic protection isn't (e.g. free organizations, where
+    rulesets can be created -- just not enforced -- on private repos), so
+    it's worth trying as a fallback. But on a plan that gates rulesets too
+    (e.g. a personal account's private repo below GitHub Pro, confirmed via
+    `GET /rulesets` -> 403 "Upgrade to GitHub Pro or make this repository
+    public"), there's no fallback: creation is bailed out on below. When a
+    ruleset can be created, a later `protection sync` run finds it via
+    `_matching_rulesets` (it carries a `required_status_checks` rule) and
+    takes the normal ruleset path, so this only ever creates -- never
+    updates.
     """
     listing = await api_raw(
         "GET", f"/repos/{owner}/{repo.name}/rulesets", params={"targets": "branch"}
@@ -1050,7 +1057,7 @@ async def _create_protection_ruleset(
         # plans that gate classic branch protection -- there is no fallback.
         # Bail here so dry-run reports the skip instead of promising a
         # ruleset the apply path can't create.
-        return _plan_gated_result(repo, tag=None if dry_run else Tag.SKIPPED_NO_PLAN)
+        return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
     summaries = listing.json() if listing.is_success else None
     if isinstance(summaries, list) and any(
         s.get("enforcement") in ("active", "evaluate") for s in summaries
@@ -1063,7 +1070,7 @@ async def _create_protection_ruleset(
             repo,
             result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
             Status.LIMITED_UNCHANGED,
-            tag=None if dry_run else Tag.RULESET_NO_CHECKS_RULE,
+            tag=Tag.RULESET_NO_CHECKS_RULE,
         )
 
     require_desc = ", ".join(sorted(contexts))
@@ -1148,9 +1155,7 @@ def make_branch_protection_worker(
         if plan_gated and mechanism != "ruleset":
             if contexts:
                 return await _create_protection_ruleset(owner, repo, contexts, dry_run)
-            return _plan_gated_result(
-                repo, tag=Tag.SKIPPED_NO_PLAN if not dry_run else None
-            )
+            return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
 
         existing = target.current_contexts()
         stale_retained = False
@@ -1204,7 +1209,7 @@ def make_branch_protection_worker(
                     repo,
                     result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
                     Status.LIMITED_UNCHANGED,
-                    tag=None if dry_run else Tag.MULTIPLE_RULESETS,
+                    tag=Tag.MULTIPLE_RULESETS,
                 )
 
             if org_rulesets and not up_to_date:
@@ -1217,7 +1222,7 @@ def make_branch_protection_worker(
                     repo,
                     result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
                     Status.LIMITED_UNCHANGED,
-                    tag=None if dry_run else Tag.ORG_RULESET,
+                    tag=Tag.ORG_RULESET,
                 )
 
             evaluate_mode = any(
@@ -1345,9 +1350,6 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
         verbose=args.verbose,
     )
 
-    if args.dry_run:
-        return 0
-
     applied = [r for r in results if r.tag == Tag.APPLIED]
     applied_no_checks = sorted(
         r.repo.name for r in results if r.tag == Tag.APPLIED_NO_CHECKS
@@ -1369,9 +1371,10 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             Tag.RULESET_NO_CHECKS_RULE,
         )
     )
+    verb = "Would be" if args.dry_run else "Protected"
     print()
     print("Summary:")
-    print(f"  Protected (with required status checks): {len(applied)}")
+    print(f"  {verb} (with required status checks): {len(applied)}")
     print(
         f"  Enforced via a repository ruleset: {' '.join(ruleset_enforced) or 'none'}"
     )
@@ -1380,7 +1383,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
         f"{' '.join(needs_attention) or 'none'}"
     )
     print(
-        "  Protected (no required status checks yet -- no PRs / no check runs "
+        f"  {verb} (no required status checks yet -- no PRs / no check runs "
         f"seen): {' '.join(applied_no_checks) or 'none'}"
     )
     print(
