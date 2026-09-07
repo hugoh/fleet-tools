@@ -5,8 +5,10 @@ repos, via the GitHub REST API (authenticated through `gh auth token`, so it
 reuses `gh`'s existing login rather than managing a separate credential). A
 single Python CLI (`repo_admin.py`, run through `uv`) with `<resource> <verb>`
 subcommands, `gh`/`aws`/`docker`-style; repos are processed in parallel
-(`GH_JOBS`, default 6). Config data lives under `repo-admin/config/`, separate
-from the `.py` source. The stateless fetch-diff-apply reconcile loop each
+(`GH_JOBS`, default 6). Config data (the `config/*.yaml` files referenced
+below) lives under `repo-admin/config/` by default; set `REPO_ADMIN_CONFIG_DIR`
+to keep it in a separate repo, checked out and run through a wrapper that
+exports that variable. The stateless fetch-diff-apply reconcile loop each
 `sync` command runs on (`run_reconcile` / `run_parallel` / `Status`) lives in
 [`reconcilekit/`](../reconcilekit/README.md), a domain-agnostic uv-workspace
 package; the GitHub REST + GraphQL transport (`api_json` / `graphql` /
@@ -100,8 +102,8 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   others; the exit code is nonzero if any of them failed.
 - **`pages sync [--dry-run]`** — sets each repo's GitHub Pages custom
   domain from the repo → domain mapping in `config/pages-domains.yaml` (the
-  same file `iac/cloudflare`'s OpenTofu config reads to generate the
-  matching DNS records), and points the repo's homepage URL at
+  same file the OpenTofu DNS config reads to generate the matching
+  records), and points the repo's homepage URL at
   `https://<domain>` so the "website" link tracks the custom domain. Only
   repos listed in the mapping are touched —
   trailing repo names narrow that set further rather than expanding it, and

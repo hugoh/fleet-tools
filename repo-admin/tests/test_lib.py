@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import subprocess
+from pathlib import Path
 
 import httpx
 import lib
@@ -193,6 +194,39 @@ def test_default_include_forks_reads_yaml_list(tmp_path, monkeypatch):
     monkeypatch.setattr(lib, "FORKS_INCLUDE_FILE", forks_file)
     monkeypatch.delenv("GH_INCLUDE_FORKS", raising=False)
     assert lib.default_include_forks() == {"Withings2Garmin"}
+
+
+def test_optional_config_files_are_empty_when_absent(tmp_path, monkeypatch):
+    missing = tmp_path / "gone"
+    monkeypatch.setattr(lib, "FORKS_INCLUDE_FILE", missing / "forks-include.yaml")
+    monkeypatch.setattr(
+        lib,
+        "BRANCH_PROTECTION_EXCLUDE_FILE",
+        missing / "branch-protection-exclude.yaml",
+    )
+    monkeypatch.setattr(lib, "PAGES_DOMAINS_FILE", missing / "pages-domains.yaml")
+    monkeypatch.setattr(lib, "VARIABLES_FILE", missing / "variables.yaml")
+    monkeypatch.delenv("GH_INCLUDE_FORKS", raising=False)
+    monkeypatch.delenv("GH_BRANCH_PROTECTION_EXCLUDE", raising=False)
+    assert lib.default_include_forks() == set()
+    assert lib.default_branch_protection_exclude() == set()
+    assert lib.default_pages_domains() == {}
+    assert lib.default_variables() == {}
+
+
+def test_config_dir_defaults_to_the_dir_next_to_lib(monkeypatch):
+    monkeypatch.delenv("REPO_ADMIN_CONFIG_DIR", raising=False)
+    assert lib._config_dir() == lib.LIB_DIR / "config"
+
+
+def test_config_dir_honours_repo_admin_config_dir_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPO_ADMIN_CONFIG_DIR", str(tmp_path / "elsewhere"))
+    assert lib._config_dir() == (tmp_path / "elsewhere").resolve()
+
+
+def test_config_dir_expands_user_in_env(monkeypatch):
+    monkeypatch.setenv("REPO_ADMIN_CONFIG_DIR", "~/fleet-config")
+    assert lib._config_dir() == (Path.home() / "fleet-config").resolve()
 
 
 @pytest.fixture

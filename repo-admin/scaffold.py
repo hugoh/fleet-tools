@@ -315,7 +315,7 @@ async def run(args: argparse.Namespace) -> int:
     print("  - /project-setup            (jj policy + raw-git block in CLAUDE.md)")
     print("  - review, then `jj commit`")
     print("  - gh repo create hugoh/" + name + " --private --source . --push")
-    print("  - (from fleet-tools/) ./repo-admin.sh sync " + name)
+    print("  - ./repo-admin.sh sync " + name)
     return 0
 
 
