@@ -1136,6 +1136,37 @@ async def test_cmd_protection_sync_passes_verbose_to_run_parallel(monkeypatch):
     assert seen["verbose"] is True
 
 
+async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
+    monkeypatch, capsys
+):
+    # A dry run must surface which private repos it can't protect due to plan
+    # limits -- previously this summary only printed on a real apply, so a
+    # dry run gave no indication a repo was silently unfixable.
+    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
+        return [REPO]
+
+    async def fake_run_parallel(repos, worker, *, verbose=False, jobs=None):
+        return [
+            repo_admin.RepoResult(
+                REPO,
+                "repo: skipped",
+                Status.LIMITED_UNCHANGED,
+                tag=repo_admin.Tag.SKIPPED_NO_PLAN,
+            )
+        ]
+
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
+    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    out = capsys.readouterr().out
+    assert "Summary:" in out
+    assert (
+        "Skipped (plan doesn't allow branch protection on private repos): repo" in out
+    )
+
+
 # ---------------------------------------------------------------------------
 # protection sync -- reusable-workflow recognition (signal 2)
 # ---------------------------------------------------------------------------
@@ -1572,6 +1603,7 @@ async def test_plan_gated_worker_reports_skip_when_rulesets_also_plan_gated(
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
+    assert result.tag == repo_admin.Tag.SKIPPED_NO_PLAN
     assert "plan does not allow branch protection" in result.line
     assert "would create ruleset" not in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
