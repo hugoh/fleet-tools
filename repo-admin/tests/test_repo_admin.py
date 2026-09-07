@@ -1489,7 +1489,13 @@ def test_new_ruleset_payload_no_contexts_omits_checks_rule():
 
 
 def _plan_gated_ruleset_worker(
-    monkeypatch, *, dry_run, contexts=("hk / lint",), ruleset_listing=(), matching=()
+    monkeypatch,
+    *,
+    dry_run,
+    contexts=("hk / lint",),
+    ruleset_listing=(),
+    ruleset_list_status=200,
+    matching=(),
 ):
     calls = []
 
@@ -1510,6 +1516,8 @@ def _plan_gated_ruleset_worker(
         if path.endswith("/protection"):
             return _FakeResponse(403)
         if method == "GET" and path.endswith("/rulesets"):
+            if ruleset_list_status != 200:
+                return _FakeResponse(ruleset_list_status)
             return _FakeResponseWithJson(200, list(ruleset_listing))
         return _FakeResponse(200)
 
@@ -1550,6 +1558,31 @@ async def test_plan_gated_worker_dry_run_reports_would_create_no_post(monkeypatc
     result = await worker(REPO)
     assert result.status == Status.OK
     assert "would create ruleset -> require: hk / lint" in result.line
+    assert not any(m == "POST" for m, _p, _j in calls)
+
+
+async def test_plan_gated_worker_reports_skip_when_rulesets_also_plan_gated(
+    monkeypatch,
+):
+    # A private repo on a plan without branch protection also can't create
+    # repository rulesets -- GET /rulesets 403s. Dry-run must say so, not
+    # promise "would create ruleset" (which apply then can't deliver).
+    worker, calls = _plan_gated_ruleset_worker(
+        monkeypatch, dry_run=True, contexts=["hk / lint"], ruleset_list_status=403
+    )
+    result = await worker(REPO)
+    assert result.status == Status.LIMITED_UNCHANGED
+    assert "plan does not allow branch protection" in result.line
+    assert "would create ruleset" not in result.line
+    assert not any(m == "POST" for m, _p, _j in calls)
+
+
+async def test_plan_gated_worker_apply_skips_when_rulesets_also_plan_gated(monkeypatch):
+    worker, calls = _plan_gated_ruleset_worker(
+        monkeypatch, dry_run=False, contexts=["hk / lint"], ruleset_list_status=403
+    )
+    result = await worker(REPO)
+    assert result.tag == repo_admin.Tag.SKIPPED_NO_PLAN
     assert not any(m == "POST" for m, _p, _j in calls)
 
 
