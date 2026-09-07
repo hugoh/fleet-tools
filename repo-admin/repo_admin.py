@@ -1045,6 +1045,12 @@ async def _create_protection_ruleset(
     listing = await api_raw(
         "GET", f"/repos/{owner}/{repo.name}/rulesets", params={"targets": "branch"}
     )
+    if listing.status_code in (403, 404):
+        # Repository rulesets are plan-gated for private repos on the same
+        # plans that gate classic branch protection -- there is no fallback.
+        # Bail here so dry-run reports the skip instead of promising a
+        # ruleset the apply path can't create.
+        return _plan_gated_result(repo, tag=None if dry_run else Tag.SKIPPED_NO_PLAN)
     summaries = listing.json() if listing.is_success else None
     if isinstance(summaries, list) and any(
         s.get("enforcement") in ("active", "evaluate") for s in summaries
