@@ -123,36 +123,37 @@ __all__ = [  # re-exported from asyncgh / reconcilekit / repokit for repo-admin'
 LIB_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = LIB_DIR / "config"
 PAGES_DOMAINS_FILE = CONFIG_DIR / "pages-domains.yaml"
-BRANCH_PROTECTION_EXCLUDE_FILE = CONFIG_DIR / "branch-protection-exclude.txt"
-SECRETS_FILE = CONFIG_DIR / "secrets.yaml"
+BRANCH_PROTECTION_EXCLUDE_FILE = CONFIG_DIR / "branch-protection-exclude.yaml"
+FORKS_INCLUDE_FILE = CONFIG_DIR / "forks-include.yaml"
 SECRETS_ENC_FILE = CONFIG_DIR / "secrets.enc.yaml"
 VARIABLES_FILE = CONFIG_DIR / "variables.yaml"
 VARIABLES_ENC_FILE = CONFIG_DIR / "variables.enc.yaml"
 SOPS_CONFIG_FILE = CONFIG_DIR / ".sops.yaml"
 
 
+def _yaml_name_set(path: Path) -> set[str]:
+    """Repo names from a YAML sequence file (one `- name` per line, `#`
+    comments native to YAML). An empty or absent list yields an empty set.
+    """
+    return set(yaml.safe_load(path.read_text()) or [])
+
+
 def default_include_forks() -> set[str]:
     """Forks hugoh actually maintains and wants managed like any other repo,
-    read from include-forks.txt (one name per line, '#' comments and blank
-    lines ignored). Override with GH_INCLUDE_FORKS (comma-separated) for a
-    one-off run; edit the file to permanently add one.
+    read from forks-include.yaml (a YAML list of repo names). Override with
+    GH_INCLUDE_FORKS (comma-separated) for a one-off run; edit the file to
+    permanently add one.
     """
     env_value = os.environ.get("GH_INCLUDE_FORKS")
     if env_value is not None:
         return as_set(env_value) or set()
-    forks_file = CONFIG_DIR / "include-forks.txt"
-    forks = set()
-    for line in forks_file.read_text().splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            forks.add(stripped)
-    return forks
+    return _yaml_name_set(FORKS_INCLUDE_FILE)
 
 
 def unmatched_include_forks(
     include_forks: set[str], repos_json: list[dict]
 ) -> set[str]:
-    """include-forks.txt entries (or GH_INCLUDE_FORKS) that don't match any
+    """forks-include.yaml entries (or GH_INCLUDE_FORKS) that don't match any
     fetched repo -- a typo, a rename, or a repo that's gone, silently going
     stale otherwise since filter_repos() just never matches them.
     """
@@ -162,20 +163,15 @@ def unmatched_include_forks(
 
 def default_branch_protection_exclude() -> set[str]:
     """Repos excluded from branch-protection specifically (e.g. homebrew-tap,
-    which has no CI/PR workflow), read from branch-protection-exclude.txt
-    (one name per line, '#' comments and blank lines ignored). Override with
-    GH_BRANCH_PROTECTION_EXCLUDE (comma-separated) for a one-off run; edit
-    the file to permanently add more.
+    which has no CI/PR workflow), read from branch-protection-exclude.yaml
+    (a YAML list of repo names). Override with GH_BRANCH_PROTECTION_EXCLUDE
+    (comma-separated) for a one-off run; edit the file to permanently add
+    more.
     """
     env_value = os.environ.get("GH_BRANCH_PROTECTION_EXCLUDE")
     if env_value is not None:
         return as_set(env_value) or set()
-    excluded = set()
-    for line in BRANCH_PROTECTION_EXCLUDE_FILE.read_text().splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            excluded.add(stripped)
-    return excluded
+    return _yaml_name_set(BRANCH_PROTECTION_EXCLUDE_FILE)
 
 
 def default_pages_domains() -> dict[str, str]:
@@ -187,34 +183,62 @@ def default_pages_domains() -> dict[str, str]:
 
 
 def _load_repo_map(path: Path) -> dict[str, list[str]]:
-    """The `name -> {repos: [...]}` shape shared by secrets.yaml and
-    variables.yaml, flattened to `name -> [repos]`.
+    """The `name -> {repos: [...]}` shape of variables.yaml, flattened to
+    `name -> [repos]`.
     """
     raw = yaml.safe_load(path.read_text()) or {}
     return {name: cfg.get("repos", []) for name, cfg in raw.items()}
 
 
-def default_secrets() -> dict[str, list[str]]:
-    """Secret name -> target repo list, read from secrets.yaml -- the
-    plaintext half of the secrets-sync config; values live sops-encrypted
-    in secrets.enc.yaml (see decrypt_secrets()).
-    """
-    return _load_repo_map(SECRETS_FILE)
-
-
 def default_variables() -> dict[str, list[str]]:
-    """Variable name -> target repo list, read from variables.yaml. Same
-    shape and sops-backed value store as secrets (a repo's Actions
-    variables aren't sensitive, but keeping the two configs identical means
-    one bootstrap path and one `edit` command cover both).
+    """Variable name -> target repo list, read from variables.yaml (the
+    plaintext half; values live sops-encrypted in variables.enc.yaml). A
+    repo's Actions variables aren't sensitive, so unlike secrets the
+    name -> repo mapping stays in the clear.
     """
     return _load_repo_map(VARIABLES_FILE)
 
 
-def _decrypt_enc(path: Path) -> dict[str, str]:
-    """Decrypts a sops-encrypted `name -> value` YAML file via `sops -d`.
-    Shells out rather than using a sops Python binding -- same
-    external-trusted-CLI style as asyncgh's `gh auth token` call.
+def _normalize_bindings(name: str, spec: object) -> list[dict]:
+    """Validates one secret's `[{repos: [...], value: str}, ...]` spec and
+    returns it with every field defaulted. A repo may appear under only one
+    binding of a given name -- two values for the same repo/name is
+    ambiguous, not a merge.
+    """
+    if not isinstance(spec, list):
+        raise GhError(
+            f"{name} in {SECRETS_ENC_FILE.name}: expected a list of "
+            "{repos, value} bindings, got {type(spec).__name__}"
+        )
+    seen: set[str] = set()
+    bindings: list[dict] = []
+    for entry in spec:
+        repos = list((entry or {}).get("repos", []))
+        clash = seen.intersection(repos)
+        if clash:
+            raise GhError(
+                f"{name} in {SECRETS_ENC_FILE.name}: "
+                f"{', '.join(sorted(clash))} listed in more than one binding"
+            )
+        seen.update(repos)
+        bindings.append({"repos": repos, "value": (entry or {}).get("value", "")})
+    return bindings
+
+
+def load_secrets() -> dict[str, list[dict]]:
+    """Secret name -> list of `{repos: [...], value: str}` bindings,
+    decrypted from secrets.enc.yaml. The whole mapping (repo names included)
+    is sops-encrypted; the common case of one value across every target repo
+    is a single-element list.
+    """
+    raw = _decrypt_enc(SECRETS_ENC_FILE)
+    return {name: _normalize_bindings(name, spec) for name, spec in raw.items()}
+
+
+def _decrypt_enc(path: Path) -> dict:
+    """Decrypts a sops-encrypted YAML file via `sops -d`. Shells out rather
+    than using a sops Python binding -- same external-trusted-CLI style as
+    asyncgh's `gh auth token` call.
     """
     if not path.exists():
         raise GhError(
@@ -237,17 +261,12 @@ def _decrypt_enc(path: Path) -> dict[str, str]:
     return data
 
 
-def decrypt_secrets() -> dict[str, str]:
-    """Secret name -> value, decrypted from secrets.enc.yaml."""
-    return _decrypt_enc(SECRETS_ENC_FILE)
-
-
 def decrypt_variables() -> dict[str, str]:
     """Variable name -> value, decrypted from variables.enc.yaml."""
     return _decrypt_enc(VARIABLES_ENC_FILE)
 
 
-def write_enc_file(path: Path, values: dict[str, str]) -> None:
+def write_enc_file(path: Path, values: dict) -> None:
     """(Re-)encrypts `values` to `path` via `sops --encrypt` -- a full
     file rewrite, not a partial sops edit, so callers merge onto the
     decrypted current contents first. Used to seed an enc file with the
@@ -368,10 +387,10 @@ async def list_repos(
 ) -> list[Repo]:
     """repokit.filter_repos over a fresh fetch, defaulting owner to
     default_owner() and include_forks to default_include_forks()
-    (config/include-forks.txt, or GH_INCLUDE_FORKS) when the caller doesn't
+    (config/forks-include.yaml, or GH_INCLUDE_FORKS) when the caller doesn't
     pass one -- repokit itself has no file-backed default, since that's
     repo-admin-specific policy. Warns (once, using this same fetch) about
-    any include-forks entry matching no repo.
+    any forks-include entry matching no repo.
 
     `require_only_match=True` raises GhError if any `only` entry matches no
     fetched repo at all (a typo or nonexistent repo name), regardless of

@@ -154,43 +154,45 @@ def test_default_pages_domains_ignores_comments(tmp_path, monkeypatch):
 
 
 def test_default_branch_protection_exclude_reads_names_from_file(tmp_path, monkeypatch):
-    exclude_file = tmp_path / "branch-protection-exclude.txt"
-    exclude_file.write_text("homebrew-tap\n")
+    exclude_file = tmp_path / "branch-protection-exclude.yaml"
+    exclude_file.write_text("- homebrew-tap\n")
     monkeypatch.setattr(lib, "BRANCH_PROTECTION_EXCLUDE_FILE", exclude_file)
     monkeypatch.delenv("GH_BRANCH_PROTECTION_EXCLUDE", raising=False)
     assert lib.default_branch_protection_exclude() == {"homebrew-tap"}
 
 
-def test_default_branch_protection_exclude_ignores_comments_and_blank_lines(
+def test_default_branch_protection_exclude_ignores_comments(tmp_path, monkeypatch):
+    exclude_file = tmp_path / "branch-protection-exclude.yaml"
+    exclude_file.write_text("# a comment\n- homebrew-tap\n")
+    monkeypatch.setattr(lib, "BRANCH_PROTECTION_EXCLUDE_FILE", exclude_file)
+    monkeypatch.delenv("GH_BRANCH_PROTECTION_EXCLUDE", raising=False)
+    assert lib.default_branch_protection_exclude() == {"homebrew-tap"}
+
+
+def test_default_branch_protection_exclude_empty_file_yields_empty_set(
     tmp_path, monkeypatch
 ):
-    exclude_file = tmp_path / "branch-protection-exclude.txt"
-    exclude_file.write_text("# a comment\n\nhomebrew-tap\n")
+    exclude_file = tmp_path / "branch-protection-exclude.yaml"
+    exclude_file.write_text("# nothing yet\n")
     monkeypatch.setattr(lib, "BRANCH_PROTECTION_EXCLUDE_FILE", exclude_file)
     monkeypatch.delenv("GH_BRANCH_PROTECTION_EXCLUDE", raising=False)
-    assert lib.default_branch_protection_exclude() == {"homebrew-tap"}
+    assert lib.default_branch_protection_exclude() == set()
 
 
 def test_default_branch_protection_exclude_env_override(tmp_path, monkeypatch):
-    exclude_file = tmp_path / "branch-protection-exclude.txt"
-    exclude_file.write_text("homebrew-tap\n")
+    exclude_file = tmp_path / "branch-protection-exclude.yaml"
+    exclude_file.write_text("- homebrew-tap\n")
     monkeypatch.setattr(lib, "BRANCH_PROTECTION_EXCLUDE_FILE", exclude_file)
     monkeypatch.setenv("GH_BRANCH_PROTECTION_EXCLUDE", "other-repo,another-repo")
     assert lib.default_branch_protection_exclude() == {"other-repo", "another-repo"}
 
 
-def test_default_secrets_reads_repo_list(tmp_path, monkeypatch):
-    secrets_file = tmp_path / "secrets.yaml"
-    secrets_file.write_text("TAP_GITHUB_TOKEN:\n  repos: [hrd, jj-trim, netcheck]\n")
-    monkeypatch.setattr(lib, "SECRETS_FILE", secrets_file)
-    assert lib.default_secrets() == {"TAP_GITHUB_TOKEN": ["hrd", "jj-trim", "netcheck"]}
-
-
-def test_default_secrets_empty_file_returns_empty_dict(tmp_path, monkeypatch):
-    secrets_file = tmp_path / "secrets.yaml"
-    secrets_file.write_text("")
-    monkeypatch.setattr(lib, "SECRETS_FILE", secrets_file)
-    assert lib.default_secrets() == {}
+def test_default_include_forks_reads_yaml_list(tmp_path, monkeypatch):
+    forks_file = tmp_path / "forks-include.yaml"
+    forks_file.write_text("# maintained forks\n- Withings2Garmin\n")
+    monkeypatch.setattr(lib, "FORKS_INCLUDE_FILE", forks_file)
+    monkeypatch.delenv("GH_INCLUDE_FORKS", raising=False)
+    assert lib.default_include_forks() == {"Withings2Garmin"}
 
 
 @pytest.fixture
@@ -200,30 +202,76 @@ def enc_file(tmp_path, monkeypatch):
     return path
 
 
-def test_decrypt_secrets_calls_sops_and_parses_yaml(enc_file, monkeypatch):
+_BINDINGS_YAML = (
+    "TAP_GITHUB_TOKEN:\n"
+    "  - repos: [hrd, jj-trim]\n"
+    "    value: tok-a\n"
+    "GIST_TOKEN:\n"
+    "  - repos: [config]\n"
+    "    value: tok-b\n"
+    "  - repos: [gh-digest]\n"
+    "    value: tok-c\n"
+)
+
+
+def test_load_secrets_parses_bindings_per_name(enc_file, monkeypatch):
     enc_file.write_text("placeholder")
 
     def fake_run(cmd, **kwargs):
         assert cmd == ["sops", "-d", str(enc_file)]
-        return subprocess.CompletedProcess(cmd, 0, stdout="NAME: value\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=_BINDINGS_YAML, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert lib.decrypt_secrets() == {"NAME": "value"}
+    assert lib.load_secrets() == {
+        "TAP_GITHUB_TOKEN": [{"repos": ["hrd", "jj-trim"], "value": "tok-a"}],
+        "GIST_TOKEN": [
+            {"repos": ["config"], "value": "tok-b"},
+            {"repos": ["gh-digest"], "value": "tok-c"},
+        ],
+    }
 
 
-def test_decrypt_secrets_strips_sops_metadata_key(enc_file, monkeypatch):
+def test_load_secrets_strips_sops_metadata_key(enc_file, monkeypatch):
     enc_file.write_text("placeholder")
 
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(
-            cmd, 0, stdout="NAME: value\nsops:\n    age: []\n", stderr=""
+            cmd,
+            0,
+            stdout="N:\n  - repos: [r]\n    value: v\nsops:\n    age: []\n",
+            stderr="",
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert lib.decrypt_secrets() == {"NAME": "value"}
+    assert lib.load_secrets() == {"N": [{"repos": ["r"], "value": "v"}]}
 
 
-def test_decrypt_secrets_raises_gh_error_on_nonzero_exit(enc_file, monkeypatch):
+def test_load_secrets_rejects_non_list_spec(enc_file, monkeypatch):
+    enc_file.write_text("placeholder")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, stdout="N: v\n", stderr=""
+        ),
+    )
+    with pytest.raises(GhError, match="expected a list"):
+        lib.load_secrets()
+
+
+def test_load_secrets_rejects_repo_in_two_bindings(enc_file, monkeypatch):
+    enc_file.write_text("placeholder")
+    dup = "N:\n  - repos: [r]\n    value: a\n  - repos: [r]\n    value: b\n"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=dup, stderr=""),
+    )
+    with pytest.raises(GhError, match="more than one binding"):
+        lib.load_secrets()
+
+
+def test_load_secrets_raises_gh_error_on_nonzero_exit(enc_file, monkeypatch):
     enc_file.write_text("placeholder")
 
     def fake_run(cmd, **kwargs):
@@ -231,10 +279,10 @@ def test_decrypt_secrets_raises_gh_error_on_nonzero_exit(enc_file, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(GhError, match="no key found"):
-        lib.decrypt_secrets()
+        lib.load_secrets()
 
 
-def test_decrypt_secrets_raises_gh_error_when_sops_not_on_path(enc_file, monkeypatch):
+def test_load_secrets_raises_gh_error_when_sops_not_on_path(enc_file, monkeypatch):
     enc_file.write_text("placeholder")
 
     def fake_run(cmd, **kwargs):
@@ -242,16 +290,16 @@ def test_decrypt_secrets_raises_gh_error_when_sops_not_on_path(enc_file, monkeyp
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(GhError, match="sops not found"):
-        lib.decrypt_secrets()
+        lib.load_secrets()
 
 
-def test_decrypt_secrets_raises_gh_error_when_file_missing(enc_file, monkeypatch):
+def test_load_secrets_raises_gh_error_when_file_missing(enc_file, monkeypatch):
     def fail_run(cmd, **kwargs):
         raise AssertionError("should not shell out to sops when the file is missing")
 
     monkeypatch.setattr(subprocess, "run", fail_run)
     with pytest.raises(GhError, match="not found"):
-        lib.decrypt_secrets()
+        lib.load_secrets()
 
 
 def test_init_secrets_file_encrypts_template_via_sops_stdin(

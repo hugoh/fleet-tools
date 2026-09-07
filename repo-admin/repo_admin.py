@@ -25,28 +25,27 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
                                  stdout for a base domain, for the given
                                  repos or, if none given, repos `pages
                                  status` would flag as unmapped
-  secrets  sync                 push GitHub Actions secrets
-                                 (config/secrets.yaml -> repos, values from
-                                 sops-encrypted config/secrets.enc.yaml) to
-                                 each configured repo
+  secrets  sync                 push GitHub Actions secrets to each target
+                                 repo -- name, targets and values all from
+                                 sops-encrypted config/secrets.enc.yaml
   secrets  edit                 open config/secrets.enc.yaml in `sops` for
-                                 interactive editing, seeding it from
-                                 config/secrets.yaml the first time
-  variables sync                push GitHub Actions variables, exactly like
-                                 secrets sync but from
-                                 config/variables.{yaml,enc.yaml}
+                                 interactive editing
+  variables sync                push GitHub Actions variables, like secrets
+                                 sync but from config/variables.{yaml,enc.yaml}
+                                 (variable name -> repos stays plaintext)
   variables edit                open config/variables.enc.yaml in `sops`,
                                  seeding it from config/variables.yaml
-  config   bootstrap REPO       add REPO to config/{secrets,variables}.yaml
-                                 from the secrets.*/vars.* its workflows
-                                 reference, then prompt for missing values
+  config   bootstrap REPO       add REPO to config/secrets.enc.yaml and
+                                 config/variables.yaml from the secrets.*/
+                                 vars.* its workflows reference, then prompt
+                                 for missing values
   activity                      rank repos by recent commit activity
                                  (private+public and public-only tables),
                                  see activity.py --help for its knobs
 
 Every `<resource> <verb>` accepts trailing repo names to scope to a subset
 (default: every repo); `--skip name1,name2` excludes instead. Forks are
-excluded by default -- except those listed in config/include-forks.txt; edit
+excluded by default -- except those listed in config/forks-include.yaml; edit
 that file to add more, or override per-run with GH_INCLUDE_FORKS
 (comma-separated). GH_OWNER overrides the default owner (the authenticated
 account); GH_JOBS controls parallelism (default 6). Run a mutating command
@@ -1695,12 +1694,15 @@ async def cmd_pages_config(args: argparse.Namespace) -> int:
 # Pushes GitHub Actions secrets / variables to their configured repos via
 # GitHub's REST API (lib.set_repo_secret -- PyNaCl-encrypted for the repo's
 # public key -- / lib.set_repo_variable), consistent with every other
-# mutating command here rather than shelling out to `gh secret set`. Name ->
-# target repos come from config/{secrets,variables}.yaml (git-committed,
-# plaintext); values from config/{secrets,variables}.enc.yaml, decrypted
-# once via `sops -d` at the start of the run. A repo's variables aren't
-# sensitive, but keeping the two configs identical in shape buys one code
-# path, one `config bootstrap`, and one `... edit` for both.
+# mutating command here rather than shelling out to `gh secret set`.
+#
+# Secrets: name, target repos and values all live in the sops-encrypted
+# config/secrets.enc.yaml as `NAME: [{repos: [...], value: str}, ...]` --
+# one binding per distinct value, so a name that needs a different token in
+# two repos is two bindings. The whole file is decrypted once via `sops -d`
+# at the start of the run (dry-run included, since the mapping is encrypted
+# too). Variables: values in config/variables.enc.yaml, but the
+# non-sensitive name -> repos map stays plaintext in config/variables.yaml.
 #
 # There's no "unchanged" detection -- GitHub never returns a secret's value,
 # and a variable set is unconditional anyway -- so every apply run sets, and
@@ -1816,16 +1818,71 @@ async def _run_value_sync(
     return 1 if failed else 0
 
 
+def _scoped(repos, only: set[str] | None, skip: set[str] | None) -> set[str]:
+    scoped = set(repos)
+    if only:
+        scoped &= only
+    if skip:
+        scoped -= skip
+    return scoped
+
+
 async def cmd_secrets_sync(args: argparse.Namespace) -> int:
-    return await _run_value_sync(
-        args,
-        name_filter=args.secret,
-        config=lib.default_secrets(),
-        decrypt=lib.decrypt_secrets,
-        make_worker=make_secrets_sync_worker,
-        plaintext_file="config/secrets.yaml",
-        enc_file="config/secrets.enc.yaml",
-    )
+    try:
+        config = lib.load_secrets()
+    except GhError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    names = as_set(args.secret)
+    if names:
+        unknown = names - set(config)
+        if unknown:
+            print(
+                f"error: not in config/secrets.enc.yaml: {', '.join(sorted(unknown))}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        names = set(config)
+
+    only = set(args.repos)
+    skip = as_set(args.skip)
+    owner = await default_owner()
+    failed = False
+    for name in sorted(names):
+        bindings = [
+            (_scoped(binding["repos"], only, skip), binding["value"])
+            for binding in config[name]
+        ]
+        if not any(repos for repos, _ in bindings):
+            _echo_name_line(f"== {name} == (no matching repos, skipping)")
+            continue
+
+        _echo_name_line(f"== {name} ==")
+        for target_repos, value in bindings:
+            if not target_repos:
+                continue
+            if not args.dry_run and not value:
+                _echo_name_line(
+                    f"error: {name!r} has an empty value for "
+                    f"{', '.join(sorted(target_repos))} in config/secrets.enc.yaml",
+                    file=sys.stderr,
+                )
+                failed = True
+                continue
+            repos = await list_repos(owner, only=target_repos)
+            try:
+                await run_parallel(
+                    repos,
+                    make_secrets_sync_worker(owner, args.dry_run, name, value),
+                    verbose=args.verbose,
+                )
+            except GhError as exc:
+                print(exc, file=sys.stderr)
+                failed = True
+
+    return 1 if failed else 0
 
 
 async def cmd_variables_sync(args: argparse.Namespace) -> int:
@@ -1844,13 +1901,18 @@ async def cmd_variables_sync(args: argparse.Namespace) -> int:
 # secrets edit / variables edit
 #
 # Opens config/{secrets,variables}.enc.yaml in `sops` for interactive
-# editing (decrypts to $EDITOR, re-encrypts on save) -- the first time,
-# seeds it pre-populated with every name from the matching plaintext .yaml
-# (empty values) so there's something to fill in rather than hand-writing
-# sops' metadata block. After editing, warns about drift against the
-# plaintext .yaml: a configured name with no value set, or a value left
-# over from a removed/renamed one.
+# editing (decrypts to $EDITOR, re-encrypts on save).
+#
+# secrets edit works on the single self-contained file: it seeds a one-entry
+# example when the file is missing, then re-parses on save to surface a
+# malformed binding. variables edit still seeds from config/variables.yaml's
+# names and warns about drift against it (a configured name with no value, a
+# leftover value for a removed name).
 # ---------------------------------------------------------------------------
+
+_SECRETS_EDIT_EXAMPLE = (
+    "EXAMPLE_SECRET:\n  - repos: [some-repo, other-repo]\n    value: ''\n"
+)
 
 
 def secrets_edit_template(names: set[str]) -> str:
@@ -1891,14 +1953,22 @@ async def _run_config_edit(
 
 
 async def cmd_secrets_edit(args: argparse.Namespace) -> int:
-    return await _run_config_edit(
-        names=set(lib.default_secrets()),
-        enc_file=lib.SECRETS_ENC_FILE,
-        init_fn=lib.init_secrets_file,
-        edit_fn=lib.edit_secrets_file,
-        decrypt_fn=lib.decrypt_secrets,
-        plaintext_file="config/secrets.yaml",
-    )
+    if not lib.SECRETS_ENC_FILE.exists():
+        print(f"creating {lib.SECRETS_ENC_FILE.name}...")
+        lib.init_secrets_file(_SECRETS_EDIT_EXAMPLE)
+
+    if lib.edit_secrets_file() != 0:
+        print(
+            "error: sops exited with a nonzero status; changes may not be saved",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        lib.load_secrets()
+    except GhError as exc:
+        print(f"warning: {exc}", file=sys.stderr)
+    return 0
 
 
 async def cmd_variables_edit(args: argparse.Namespace) -> int:
@@ -1917,15 +1987,21 @@ async def cmd_variables_edit(args: argparse.Namespace) -> int:
 #
 # First-run helper for a repo: reads which secrets.* / vars.* its workflows
 # reference (straight off GitHub, so the list can't drift from the workflow
-# file), adds the repo to config/secrets.yaml + config/variables.yaml, and
-# prompts for any value not already in the sops-encrypted stores. Prints the
-# `secrets sync` / `variables sync` commands to run next -- populating config
-# and applying it stay separate, like `secrets edit` vs `secrets sync`.
+# file), binds the repo in config/secrets.enc.yaml + config/variables.yaml,
+# and prompts for any value not already stored. Prints the `secrets sync` /
+# `variables sync` commands to run next -- populating config and applying it
+# stay separate, like `secrets edit` vs `secrets sync`.
+#
+# A new secret name gets a fresh single binding with the prompted value; an
+# existing name adds the repo to its first binding (sharing that value). A
+# repo needing its own value for an already-bound name is a `secrets edit`
+# job, not a bootstrap one.
 # ---------------------------------------------------------------------------
 
 CONFIG_MAP_HEADER = (
-    "# <name> -> target repo list. Values live sops-encrypted in the matching\n"
-    "# .enc.yaml. Managed by `repo_admin.py config bootstrap`; hand-edits welcome.\n"
+    "# Variable name -> target repo list. Values live sops-encrypted in\n"
+    "# variables.enc.yaml. Managed by `repo_admin.py config bootstrap`;\n"
+    "# hand-edits welcome.\n"
 )
 
 
@@ -1968,6 +2044,30 @@ def _prompt_missing_values(enc_file, names: set[str], decrypt_fn, prompt) -> lis
     return got
 
 
+def _bootstrap_secret_bindings(names: set[str], repo: str, prompt) -> list[str]:
+    """Binds `repo` under each secret name in config/secrets.enc.yaml,
+    prompting (via `prompt`) for the value of any name not there yet, and
+    re-encrypts if anything changed. Returns the names that gained `repo`.
+    """
+    current = lib.load_secrets() if lib.SECRETS_ENC_FILE.exists() else {}
+    merged = {name: [dict(b) for b in bindings] for name, bindings in current.items()}
+    added: list[str] = []
+    for name in sorted(names):
+        bindings = merged.setdefault(name, [])
+        if any(repo in b["repos"] for b in bindings):
+            _echo_name_line(f"  {name}: (already bound to {repo}, skipping)")
+            continue
+        if bindings:
+            bindings[0]["repos"] = sorted({*bindings[0]["repos"], repo})
+            _echo_name_line(f"  {name}: bound {repo} to the existing value")
+        else:
+            merged[name] = [{"repos": [repo], "value": prompt(f"  {name}: ")}]
+        added.append(name)
+    if added:
+        lib.write_enc_file(lib.SECRETS_ENC_FILE, merged)
+    return added
+
+
 async def cmd_config_bootstrap(args: argparse.Namespace) -> int:
     owner = await default_owner()
     repo = args.repo
@@ -1986,14 +2086,11 @@ async def cmd_config_bootstrap(args: argparse.Namespace) -> int:
     _echo_name_line(f"  secrets:   {', '.join(sorted(secret_names)) or '(none)'}")
     _echo_name_line(f"  variables: {', '.join(sorted(var_names)) or '(none)'}")
 
-    _add_repo_to_config_map(lib.SECRETS_FILE, secret_names, repo)
     _add_repo_to_config_map(lib.VARIABLES_FILE, var_names, repo)
 
     if secret_names:
         print("\nsecret values (input hidden; Enter to keep/skip):")
-        _prompt_missing_values(
-            lib.SECRETS_ENC_FILE, secret_names, lib.decrypt_secrets, getpass
-        )
+        _bootstrap_secret_bindings(secret_names, repo, getpass)
     if var_names:
         print("\nvariable values (Enter to keep/skip):")
         _prompt_missing_values(
@@ -2124,7 +2221,7 @@ def build_parser() -> argparse.ArgumentParser:
     secrets_sync_parser.add_argument(
         "--secret",
         help="comma-separated secret names to sync (default: all in "
-        "config/secrets.yaml)",
+        "config/secrets.enc.yaml)",
     )
     secrets_sync_parser.set_defaults(func=cmd_secrets_sync)
     secrets.add_parser("edit").set_defaults(func=cmd_secrets_edit)
