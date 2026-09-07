@@ -103,7 +103,8 @@ async def test_action_flag_adds_renovate_rule_and_major_tag(tmp_path: Path) -> N
     target = tmp_path / "act"
     await _run(target, action=True, release=True)
     assert (
-        '"matchFileNames": ["action.yml"]' in (target / ".renovaterc.json").read_text()
+        "github>hugoh/renovate-config//presets/action-file"
+        in (target / ".renovaterc.json").read_text()
     )
     assert "major-tag: true" in (target / ".github/workflows/release.yml").read_text()
     assert (target / "action.yml").is_file()
