@@ -16,7 +16,7 @@ plumbing (`list_repos` / `filter_repos` / `run_cli`) live in a third,
 [`repokit/`](../repokit/README.md) — `lib.py` layers this repo's own
 config-file loading, sops glue, and fork/exclude policy on top of all
 three. Forks are excluded by default — except
-those listed in `config/include-forks.txt`; edit that file to add more, or
+those listed in `config/forks-include.yaml`; edit that file to add more, or
 override per-run with `GH_INCLUDE_FORKS` (comma-separated). Every subcommand
 accepts trailing repo names to scope to a subset (default: every repo) and
 `--skip name1,name2` to exclude instead; `GH_OWNER` overrides the default
@@ -85,7 +85,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   classic protection has no bypass. A plan-gated repo with nothing to sample yet
   is still just reported, as is one that already has a branch ruleset without a
   checks rule (add the gate there by hand). Repos listed in
-  `config/branch-protection-exclude.txt` (e.g. `homebrew-tap`, which has no
+  `config/branch-protection-exclude.yaml` (e.g. `homebrew-tap`, which has no
   CI/PR workflow) are skipped entirely — no classic protection, no ruleset;
   override per-run with `GH_BRANCH_PROTECTION_EXCLUDE`.
 - **`security sync [--dry-run]`** — enables Dependabot vulnerability
@@ -121,49 +121,52 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   Pages enabled but missing from `config/pages-domains.yaml` (the same set
   `pages status` flags) and suggests entries for those.
 - **`secrets sync [--dry-run] [--secret name1,name2]`** — pushes GitHub
-  Actions secrets (name → target-repo list in `config/secrets.yaml`, values
-  sops-encrypted in `config/secrets.enc.yaml`) to each configured repo via
-  GitHub's REST API, encrypting each value in-process with PyNaCl for the
-  target repo's public key — the plaintext value is never written to disk
-  or passed as a subprocess argument. Trailing repo names / `--skip` filter
-  repo names *within* each secret's configured repo list, same as every
-  other command; `--secret` narrows which secret names from
-  `config/secrets.yaml` to sync (defaults to all of them). GitHub's API
-  never returns a secret's existing value, so there's no unchanged/changed
-  detection — `--dry-run` just reports which repos would receive each
-  secret. Decrypting `config/secrets.enc.yaml` requires `sops` on `PATH`
-  with access to the shared age key; encrypt a new/updated value yourself,
-  e.g.:
+  Actions secrets to each target repo via GitHub's REST API, encrypting each
+  value in-process with PyNaCl for the target repo's public key — the
+  plaintext value is never written to disk or passed as a subprocess
+  argument. Everything — secret name, target repos and values — lives in the
+  sops-encrypted `config/secrets.enc.yaml`, shaped as
 
-  ```text
-  cd repo-admin
-  sops --encrypt --input-type yaml --output-type yaml \
-    <(echo "TAP_GITHUB_TOKEN: <value>") > config/secrets.enc.yaml
+  ```yaml
+  GIST_TOKEN:
+    - repos: [config]
+      value: <token>
+  TAP_GITHUB_TOKEN:
+    - repos: [hrd, jj-trim, netcheck, tmhi-cli]
+      value: <token>
   ```
 
+  One binding (`{repos, value}`) per distinct value, so a name that needs a
+  different token in two repos is just two bindings; the common one-value
+  case is a single-element list. Trailing repo names / `--skip` filter repo
+  names *within* each binding, same as every other command; `--secret`
+  narrows which secret names to sync (defaults to all). GitHub's API never
+  returns a secret's existing value, so there's no unchanged/changed
+  detection — `--dry-run` just reports which repos would receive each
+  secret (it still decrypts, since the mapping is encrypted too). Decrypting
+  requires `sops` on `PATH` with access to the shared age key.
 - **`secrets edit`** — opens `config/secrets.enc.yaml` in `sops` for
-  interactive editing (decrypts to `$EDITOR`, re-encrypts on save) — an
-  alternative to the `sops --encrypt` one-liner above. The first time, seeds
-  the file pre-populated with every `config/secrets.yaml` key (empty values)
-  so there's something to fill in instead of hand-writing sops' metadata
-  block. After editing, warns (doesn't fail) about drift against
-  `config/secrets.yaml`: a configured secret left with no value, or a value
-  left over from a removed/renamed secret.
-- **`variables sync`** / **`variables edit`** — identical to the two
-  `secrets` commands above in every way, operating on
-  `config/variables.yaml` + `config/variables.enc.yaml` and GitHub's
-  Actions *variables* API (`lib.set_repo_variable`, PATCH-or-POST). A
-  repo's variables aren't sensitive, but keeping the two configs the same
-  shape means one bootstrap path and one edit command for both. `--variable`
+  interactive editing (decrypts to `$EDITOR`, re-encrypts on save). When the
+  file doesn't exist yet it's seeded with a one-entry example to fill in
+  instead of hand-writing sops' metadata block. After editing, warns
+  (doesn't fail) if a binding is malformed.
+- **`variables sync`** / **`variables edit`** — like the two `secrets`
+  commands, operating on `config/variables.yaml` + `config/variables.enc.yaml`
+  and GitHub's Actions *variables* API (`lib.set_repo_variable`,
+  PATCH-or-POST). A repo's variables aren't sensitive, so unlike secrets the
+  variable-name → target-repo map stays in the clear in
+  `config/variables.yaml`; only the values are sops-encrypted. `--variable`
   narrows which names to sync.
 - **`config bootstrap REPO`** — first-run helper for a repo. Reads which
   `secrets.*` / `vars.*` its `.github/workflows/` reference (fetched from
-  GitHub, so the list can't drift from the workflow file), adds `REPO` to
-  `config/secrets.yaml` and `config/variables.yaml` under those names, then
-  prompts (hidden for secrets) for any value not already in the encrypted
-  stores and writes it back through `sops`. Populating config and applying
-  it stay separate — it finishes by printing the `secrets sync` /
-  `variables sync` commands to run next. Replaces the old per-repo
+  GitHub, so the list can't drift from the workflow file), binds `REPO` in
+  `config/secrets.enc.yaml` (a new secret name gets a fresh binding with the
+  prompted value; an existing one adds `REPO` to its first binding) and adds
+  it to `config/variables.yaml`, prompting (hidden for secrets) for any
+  value not already stored and writing it back through `sops`. Populating
+  config and applying it stay separate — it finishes by printing the
+  `secrets sync` / `variables sync` commands to run next. Replaces the old
+  per-repo
   `setup-config.py` bootstrap scripts.
 - **`activity`** — reports recent commit activity per repo, ranked by an
   exponential recency-decay score. See `activity.py`'s header comment.
