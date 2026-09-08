@@ -49,7 +49,10 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   delete-branch-on-merge, and PR-branch auto-update (the last one matters
   because branch protection requires PR branches to be up to date before
   merging; without auto-update, auto-merge PRs stall needing a manual
-  "Update branch" click)
+  "Update branch" click). Also sets the squash-merge subject to the PR
+  title (`squash_merge_commit_title=PR_TITLE`) for repos where `semantic-pr`
+  is already a required status check — so it trails `protection sync` and
+  needs no opt-in list.
 - **`protection sync [--dry-run] [--clear-stale-checks]`** — requires
   status checks to pass and a
   PR (0 approvals needed, no direct pushes) before merging, matching the
