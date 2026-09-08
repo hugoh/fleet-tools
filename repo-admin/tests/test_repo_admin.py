@@ -316,6 +316,156 @@ async def test_merge_settings_worker_apply_limited_when_partially_fixed(monkeypa
 
 
 # ---------------------------------------------------------------------------
+# squash-merge commit title
+# ---------------------------------------------------------------------------
+
+SQUASH_ON = {
+    "squash_merge_commit_title": "PR_TITLE",
+    "squash_merge_commit_message": "COMMIT_MESSAGES",
+}
+SQUASH_OFF = {
+    "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+    "squash_merge_commit_message": "COMMIT_MESSAGES",
+}
+
+
+def test_has_semantic_pr_check_bare_context():
+    assert repo_admin._has_semantic_pr_check(["hk / lint", "semantic-pr"])
+
+
+def test_has_semantic_pr_check_reusable_form():
+    assert repo_admin._has_semantic_pr_check(["semantic-pr / semantic-pr"])
+
+
+def test_has_semantic_pr_check_absent():
+    assert not repo_admin._has_semantic_pr_check(["hk / lint", "goci"])
+    assert not repo_admin._has_semantic_pr_check(["not-semantic-pr / x"])
+
+
+def test_squash_title_at_target():
+    assert repo_admin.squash_title_at_target(SQUASH_ON)
+    assert not repo_admin.squash_title_at_target(SQUASH_OFF)
+    assert not repo_admin.squash_title_at_target({})
+
+
+def test_squash_title_line_not_applicable():
+    line = repo_admin.squash_title_line(
+        "repo", SQUASH_OFF, None, Status.UNCHANGED, applies=False
+    )
+    assert line == f"{'repo':<30} unchanged: semantic-pr not a required check"
+
+
+def test_squash_title_line_dry_run_would_set():
+    line = repo_admin.squash_title_line(
+        "repo", SQUASH_OFF, None, Status.OK, applies=True
+    )
+    assert "would set: squash_merge_commit_title=PR_TITLE" in line
+
+
+def test_squash_title_line_apply_changed():
+    line = repo_admin.squash_title_line(
+        "repo", SQUASH_OFF, SQUASH_ON, Status.OK, applies=True
+    )
+    assert line == f"{'repo':<30} {SQUASH_OFF} -> {SQUASH_ON}"
+
+
+def _squash_title_worker(monkeypatch, *, current, applies, after=None, dry_run=True):
+    states = iter([current, after if after is not None else current])
+
+    async def fake_squash_settings(owner, name):
+        return next(states)
+
+    async def fake_required(owner, name, default_branch):
+        return applies
+
+    async def fake_api_json(*a, **k):
+        return {}
+
+    monkeypatch.setattr(repo_admin, "_squash_settings", fake_squash_settings)
+    monkeypatch.setattr(repo_admin, "_semantic_pr_required", fake_required)
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    return repo_admin.make_squash_title_worker(owner="hugoh", dry_run=dry_run)
+
+
+async def test_squash_title_worker_quiet_when_not_required(monkeypatch):
+    worker = _squash_title_worker(monkeypatch, current=SQUASH_OFF, applies=False)
+    result = await worker(REPO)
+    assert result.status == Status.UNCHANGED
+    assert "not a required check" in result.line
+
+
+async def test_squash_title_worker_quiet_when_already_at_target(monkeypatch):
+    worker = _squash_title_worker(monkeypatch, current=SQUASH_ON, applies=True)
+    assert (await worker(REPO)).status == Status.UNCHANGED
+
+
+async def test_squash_title_worker_dry_run_would_change(monkeypatch):
+    worker = _squash_title_worker(monkeypatch, current=SQUASH_OFF, applies=True)
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert "would set" in result.line
+
+
+async def test_squash_title_worker_apply_reaches_target(monkeypatch):
+    worker = _squash_title_worker(
+        monkeypatch, current=SQUASH_OFF, applies=True, after=SQUASH_ON, dry_run=False
+    )
+    assert (await worker(REPO)).status == Status.OK
+
+
+async def test_squash_title_worker_apply_does_not_reach_target(monkeypatch):
+    worker = _squash_title_worker(
+        monkeypatch, current=SQUASH_OFF, applies=True, after=SQUASH_OFF, dry_run=False
+    )
+    assert (await worker(REPO)).status == Status.LIMITED_UNCHANGED
+
+
+class _Resp:
+    def __init__(self, status_code, body=None):
+        self.status_code = status_code
+        self.is_success = status_code < 400
+        self._body = body or {}
+
+    def json(self):
+        return self._body
+
+
+def _semantic_pr_required_env(monkeypatch, *, protection, repo_rulesets=()):
+    async def fake_api_raw(method, path, *a, **k):
+        return _Resp(*protection)
+
+    async def fake_matching_rulesets(owner, name, default_branch):
+        return list(repo_rulesets), []
+
+    monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
+    monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_matching_rulesets)
+
+
+async def test_semantic_pr_required_from_classic_protection(monkeypatch):
+    _semantic_pr_required_env(
+        monkeypatch,
+        protection=(
+            200,
+            {"required_status_checks": {"contexts": ["hk / lint", "semantic-pr"]}},
+        ),
+    )
+    assert await repo_admin._semantic_pr_required("hugoh", "repo", "main") is True
+
+
+async def test_semantic_pr_required_false_when_absent(monkeypatch):
+    _semantic_pr_required_env(
+        monkeypatch,
+        protection=(200, {"required_status_checks": {"contexts": ["hk / lint"]}}),
+    )
+    assert await repo_admin._semantic_pr_required("hugoh", "repo", "main") is False
+
+
+async def test_semantic_pr_required_false_when_no_protection(monkeypatch):
+    _semantic_pr_required_env(monkeypatch, protection=(404,))
+    assert await repo_admin._semantic_pr_required("hugoh", "repo", "main") is False
+
+
+# ---------------------------------------------------------------------------
 # security sync
 # ---------------------------------------------------------------------------
 

@@ -9,7 +9,9 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
                                  mise.toml, .renovaterc.json, workflow callers)
                                  from templates/ — see `repo scaffold --help`
   merge    sync                 enable auto-merge, delete-branch-on-merge,
-                                 and PR-branch auto-update
+                                 and PR-branch auto-update; set the squash
+                                 subject to the PR title where semantic-pr
+                                 is a required check
   protection sync               apply a baseline branch-protection policy to
                                  each repo's default branch
   security sync                 enable free, native GitHub security features
@@ -253,11 +255,153 @@ def make_merge_settings_worker(owner: str, dry_run: bool):
     return worker
 
 
+# ---------------------------------------------------------------------------
+# squash-merge commit title
+#
+# GitHub's default squash-merge subject is "<PR title> (#<n>)" only for a
+# single-commit PR; multi-commit PRs fall back to the branch name. Setting
+# squash_merge_commit_title=PR_TITLE makes the PR title the squash subject
+# unconditionally -- worth doing only where that title is linted into
+# Conventional-Commit form, i.e. where the `semantic-pr` reusable workflow's
+# check already gates merges on the default branch. So this trails
+# `protection sync` per repo: the setting is picked up on the `merge sync`
+# run after `semantic-pr` becomes a required check, with no separate opt-in
+# list to maintain.
+# ---------------------------------------------------------------------------
+
+SQUASH_MERGE_TARGET = {
+    "squash_merge_commit_title": "PR_TITLE",
+    "squash_merge_commit_message": "COMMIT_MESSAGES",
+}
+
+
+def _has_semantic_pr_check(contexts: list[str]) -> bool:
+    """True when `semantic-pr` gates merges -- as a bare context, or as the
+    `<caller job> / <reusable job>` form GitHub reports for a `uses:` job.
+    """
+    return any(c == "semantic-pr" or c.startswith("semantic-pr / ") for c in contexts)
+
+
+def squash_title_at_target(current: dict) -> bool:
+    return all(current.get(key) == value for key, value in SQUASH_MERGE_TARGET.items())
+
+
+def squash_title_line(
+    name: str, before: dict, after: dict | None, status: Status, *, applies: bool
+) -> str:
+    if not applies:
+        return result_line(name, "semantic-pr not a required check", status)
+    if after is None:
+        detail = (
+            str(before)
+            if squash_title_at_target(before)
+            else "would set: "
+            + ", ".join(f"{k}={v}" for k, v in SQUASH_MERGE_TARGET.items())
+        )
+    else:
+        detail = str(after) if before == after else f"{before} -> {after}"
+    return result_line(name, detail, status)
+
+
+async def _squash_settings(owner: str, name: str) -> dict:
+    data = await api_json("GET", f"/repos/{owner}/{name}")
+    return {key: data.get(key) for key in SQUASH_MERGE_TARGET}
+
+
+async def _semantic_pr_required(owner: str, name: str, default_branch: str) -> bool:
+    response = await api_raw(
+        "GET", f"/repos/{owner}/{name}/branches/{default_branch}/protection"
+    )
+    if response.status_code in (403, 404):
+        classic = None
+    elif response.is_success:
+        classic = response.json()
+    else:
+        raise GhError(error_message(response), status_code=response.status_code)
+    repo_rulesets, org_rulesets = await _matching_rulesets(owner, name, default_branch)
+    contexts = ChecksTarget(
+        classic=classic, repo_rulesets=repo_rulesets, org_rulesets=org_rulesets
+    ).current_contexts()
+    return _has_semantic_pr_check(contexts)
+
+
+@dataclass
+class _SquashTitleState:
+    current: dict
+    applies: bool
+
+
+def make_squash_title_worker(owner: str, dry_run: bool):
+    async def worker(repo: Repo) -> RepoResult:
+        async def fetch() -> _SquashTitleState:
+            current, applies = await asyncio.gather(
+                _squash_settings(owner, repo.name),
+                _semantic_pr_required(owner, repo.name, repo.default_branch),
+            )
+            return _SquashTitleState(current, applies)
+
+        def quiet(state: _SquashTitleState) -> bool:
+            return not state.applies or squash_title_at_target(state.current)
+
+        def plan_result(state: _SquashTitleState) -> RepoResult:
+            status = Status.UNCHANGED if quiet(state) else Status.OK
+            return RepoResult(
+                repo,
+                squash_title_line(
+                    repo.name, state.current, None, status, applies=state.applies
+                ),
+                status,
+            )
+
+        async def apply_result(state: _SquashTitleState) -> RepoResult:
+            if quiet(state):
+                return RepoResult(
+                    repo,
+                    squash_title_line(
+                        repo.name,
+                        state.current,
+                        state.current,
+                        Status.UNCHANGED,
+                        applies=state.applies,
+                    ),
+                    Status.UNCHANGED,
+                )
+            await api_json(
+                "PATCH", f"/repos/{owner}/{repo.name}", json=dict(SQUASH_MERGE_TARGET)
+            )
+            after = await _squash_settings(owner, repo.name)
+            status = classify_status(
+                at_target=squash_title_at_target(after), changed=state.current != after
+            )
+            return RepoResult(
+                repo,
+                squash_title_line(
+                    repo.name, state.current, after, status, applies=True
+                ),
+                status,
+            )
+
+        return await run_reconcile(
+            dry_run=dry_run,
+            fetch=fetch,
+            plan_result=plan_result,
+            apply_result=apply_result,
+        )
+
+    return worker
+
+
 async def cmd_merge_sync(args: argparse.Namespace) -> int:
     repos = await list_repos_for_args(args)
+    owner = await default_owner()
     await run_parallel(
         repos,
-        make_merge_settings_worker(await default_owner(), args.dry_run),
+        make_merge_settings_worker(owner, args.dry_run),
+        verbose=args.verbose,
+    )
+    await run_parallel(
+        repos,
+        make_squash_title_worker(owner, args.dry_run),
         verbose=args.verbose,
     )
     return 0
