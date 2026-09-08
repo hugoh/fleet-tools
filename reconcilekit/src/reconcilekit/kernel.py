@@ -86,6 +86,7 @@ async def run_parallel(
     *,
     jobs: int = DEFAULT_JOBS,
     verbose: bool = False,
+    dry_run: bool = False,
     error_cls: type[Exception] = ReconcileError,
 ) -> list[R]:
     """Runs worker(target) for each target concurrently (bounded by a semaphore
@@ -106,10 +107,12 @@ async def run_parallel(
     LIMITED_UNCHANGED) isn't printed live -- on a large fleet the handful of
     lines that represent an actual change would otherwise be lost in a wall of
     "unchanged: ..." lines. Suppressed lines are counted and reported as a
-    single dim summary line instead.
+    single dim summary line instead. The changed targets (OK / LIMITED) are
+    tallied on their own line too -- "N changed", or "N would change" when
+    `dry_run=True`.
 
-    `jobs`/`verbose`/`error_cls` are keyword-only so a bare positional bool at
-    a call site can't be misread as one or the other.
+    `jobs`/`verbose`/`dry_run`/`error_cls` are keyword-only so a bare
+    positional bool at a call site can't be misread as one or the other.
     """
     results: list[R] = []
     failed_names: list[str] = []
@@ -147,6 +150,12 @@ async def run_parallel(
             for target in targets:
                 tg.create_task(call(target))
 
+    changed = sum(1 for r in results if r.status not in QUIET_STATUSES)
+    if changed:
+        console.print(
+            f"  {changed} {'would change' if dry_run else 'changed'}",
+            style="bold",
+        )
     if unchanged_count:
         console.print(
             f"  {unchanged_count} unchanged (rerun with --verbose to see them)",

@@ -1,4 +1,5 @@
 import asyncio
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -174,6 +175,36 @@ async def test_run_parallel_always_shows_non_unchanged_lines(capsys, status):
         out = capsys.readouterr().out
         assert "t-a line" in out
     assert "unchanged" not in out
+
+
+async def test_run_parallel_tallies_changed_targets(capsys):
+    async def worker(target):
+        status = Status.OK if target.name == "t-a" else Status.UNCHANGED
+        return Result(target, f"{target.name} line", status=status)
+
+    await run_parallel([Fake("t-a"), Fake("t-b")], worker, jobs=1)
+    out = capsys.readouterr().out
+    assert "1 changed" in out
+    assert "1 unchanged" in out
+
+
+async def test_run_parallel_changed_tally_says_would_change_on_dry_run(capsys):
+    async def worker(target):
+        return Result(target, f"{target.name} line", status=Status.OK)
+
+    await run_parallel([Fake("t-a")], worker, jobs=1, dry_run=True)
+    out = capsys.readouterr().out
+    assert "1 would change" in out
+
+
+async def test_run_parallel_no_changed_tally_when_all_unchanged(capsys):
+    async def worker(target):
+        return Result(target, f"{target.name} line", status=Status.UNCHANGED)
+
+    await run_parallel([Fake("t-a")], worker, jobs=1)
+    out = capsys.readouterr().out
+    assert not re.search(r"\d+ (changed|would change)", out)
+    assert "1 unchanged" in out
 
 
 async def test_run_parallel_hides_limited_unchanged_lines_by_default(capsys):

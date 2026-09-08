@@ -398,11 +398,13 @@ async def cmd_merge_sync(args: argparse.Namespace) -> int:
         repos,
         make_merge_settings_worker(owner, args.dry_run),
         verbose=args.verbose,
+        dry_run=args.dry_run,
     )
     await run_parallel(
         repos,
         make_squash_title_worker(owner, args.dry_run),
         verbose=args.verbose,
+        dry_run=args.dry_run,
     )
     return 0
 
@@ -603,6 +605,7 @@ async def cmd_security_sync(args: argparse.Namespace) -> int:
         repos,
         make_security_features_worker(await default_owner(), args.dry_run),
         verbose=args.verbose,
+        dry_run=args.dry_run,
     )
 
     if args.dry_run:
@@ -1492,6 +1495,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             clear_stale_checks=getattr(args, "clear_stale_checks", False),
         ),
         verbose=args.verbose,
+        dry_run=args.dry_run,
     )
 
     applied = [r for r in results if r.tag == Tag.APPLIED]
@@ -1716,6 +1720,7 @@ async def cmd_pages_sync(args: argparse.Namespace) -> int:
         repos,
         make_pages_domain_worker(await default_owner(), args.dry_run, domains),
         verbose=args.verbose,
+        dry_run=args.dry_run,
     )
     return 0
 
@@ -1963,6 +1968,7 @@ async def _run_value_sync(
                     await default_owner(), args.dry_run, name, values.get(name, "")
                 ),
                 verbose=args.verbose,
+                dry_run=args.dry_run,
             )
         except GhError as exc:
             print(exc, file=sys.stderr)
@@ -2030,6 +2036,7 @@ async def cmd_secrets_sync(args: argparse.Namespace) -> int:
                     repos,
                     make_secrets_sync_worker(owner, args.dry_run, name, value),
                     verbose=args.verbose,
+                    dry_run=args.dry_run,
                 )
             except GhError as exc:
                 print(exc, file=sys.stderr)

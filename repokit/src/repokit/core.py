@@ -128,12 +128,17 @@ def run_cli(
 
 
 async def run_parallel(
-    repos: list[Repo], worker, *, jobs: int = DEFAULT_JOBS, verbose: bool = False
+    repos: list[Repo],
+    worker,
+    *,
+    jobs: int = DEFAULT_JOBS,
+    verbose: bool = False,
+    dry_run: bool = False,
 ) -> list[RepoResult]:
     """reconcilekit.run_parallel with GhError bound as the failure exception
     type. See reconcilekit.kernel for the concurrency, failure-isolation,
     and quiet-suppression behaviour.
     """
     return await _run_parallel(
-        repos, worker, jobs=jobs, verbose=verbose, error_cls=GhError
+        repos, worker, jobs=jobs, verbose=verbose, dry_run=dry_run, error_cls=GhError
     )
