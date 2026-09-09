@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,4 +41,17 @@ jobs:
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
             gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+          done <<< "$TAGS"
+
+      - name: Dispatch package publish workflows
+        if: steps.bump.outputs.tags != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGS: ${{ steps.bump.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            pkg="${tag%-v*}"
+            gh workflow run "release-${pkg}.yml" --ref main -f ref="$tag"
           done <<< "$TAGS"
