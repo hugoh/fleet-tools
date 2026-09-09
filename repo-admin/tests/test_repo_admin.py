@@ -1274,7 +1274,9 @@ async def test_cmd_protection_sync_passes_verbose_to_run_parallel(monkeypatch):
     async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
         return [REPO]
 
-    async def fake_run_parallel(repos, worker, *, verbose=False, jobs=None):
+    async def fake_run_parallel(
+        repos, worker, *, verbose=False, jobs=None, dry_run=False
+    ):
         seen["verbose"] = verbose
         return []
 
@@ -1295,7 +1297,9 @@ async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
     async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
         return [REPO]
 
-    async def fake_run_parallel(repos, worker, *, verbose=False, jobs=None):
+    async def fake_run_parallel(
+        repos, worker, *, verbose=False, jobs=None, dry_run=False
+    ):
         return [
             repo_admin.RepoResult(
                 REPO,
