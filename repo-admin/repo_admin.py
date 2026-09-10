@@ -103,6 +103,7 @@ class Tag(enum.StrEnum):
     """
 
     APPLIED = "applied"
+    RENAME_CANDIDATE = "rename_candidate"
     APPLIED_NO_CHECKS = "applied_no_checks"
     APPLIED_RULESET = "applied_ruleset"
     APPLIED_BOTH = "applied_both"
@@ -743,6 +744,29 @@ async def _recent_pr_head_shas(owner: str, name: str) -> list[str]:
     return [pull["head"]["sha"] for pull in pulls]
 
 
+_BASE_BRANCH_SAMPLE_SIZE = "5"
+
+
+async def _base_branch_check_names(
+    owner: str, name: str, default_branch: str
+) -> set[str]:
+    """Names of GitHub Actions check runs seen on recent default-branch commits.
+
+    Used to tell a genuine check rename from GitHub's cross-run bare/prefixed
+    naming inconsistency when reconciling required-check contexts.
+    """
+    commits = await api_json(
+        "GET",
+        f"/repos/{owner}/{name}/commits",
+        params={"sha": default_branch, "per_page": _BASE_BRANCH_SAMPLE_SIZE},
+    )
+    names: set[str] = set()
+    for commit in commits:
+        for run in await _github_actions_check_runs(owner, name, commit["sha"]):
+            names.add(run["name"])
+    return names
+
+
 async def _github_actions_check_runs(owner: str, name: str, sha: str) -> list[dict]:
     data = await api_json("GET", f"/repos/{owner}/{name}/commits/{sha}/check-runs")
     return [
@@ -902,13 +926,29 @@ def _gate_sibling(prefix: str, job: str) -> set[str]:
     return {f"{prefix}gate", f"{prefix}{job}-gate", f"{prefix}{job} / gate"}
 
 
-def _reconcile_reusable_prefix(sampled: list[str], existing: list[str]) -> list[str]:
+def _reconcile_reusable_prefix(
+    sampled: list[str],
+    existing: list[str],
+    base_branch_checks: set[str] | None = None,
+    prefer_sampled: bool = False,
+) -> list[str]:
     """A `workflow_call` check is reported as `<caller job> / <reusable job>`
     on most runs but sometimes bare `<reusable job>` -- a GitHub inconsistency
     across runs of the same workflow. When a freshly-sampled context is the
     prefix-stripped (or prefixed) form of one already required, keep the
     existing spelling: switching the merge gate to the bare name strands it
     pending, since `main`'s runs report the prefixed name.
+
+    `base_branch_checks`, when given, is the set of check-run names seen on
+    recent base-branch commits. If the existing spelling is absent from it but
+    the sampled one is present, the check was genuinely renamed (not a per-run
+    inconsistency) and the sample wins -- otherwise the stale gate can never be
+    satisfied again.
+
+    `prefer_sampled` (the `--adopt-renamed-checks` opt-in) skips the heuristic
+    and takes the sampled spelling, for a rename that lives only on an open PR --
+    where the base branch still reports the old name and the gate it blocks is
+    the very PR that renames the check.
     """
     if not sampled or not existing:
         return sorted(set(sampled))
@@ -921,8 +961,23 @@ def _reconcile_reusable_prefix(sampled: list[str], existing: list[str]) -> list[
             (e for e in existing if e.endswith(f" / {ctx}") or ctx.endswith(f" / {e}")),
             None,
         )
-        out.append(equiv if equiv is not None else ctx)
+        take_sample = (
+            equiv is None
+            or prefer_sampled
+            or _renamed_on_base_branch(ctx, equiv, base_branch_checks)
+        )
+        out.append(ctx if take_sample else equiv)
     return sorted(set(out))
+
+
+def _renamed_on_base_branch(
+    sampled: str, existing: str, base_branch_checks: set[str] | None
+) -> bool:
+    return (
+        base_branch_checks is not None
+        and existing not in base_branch_checks
+        and sampled in base_branch_checks
+    )
 
 
 # The GitHub Actions app id on github.com. Pinning a ruleset's required-check
@@ -1245,7 +1300,10 @@ async def _create_protection_ruleset(
 
 
 def make_branch_protection_worker(
-    owner: str, dry_run: bool, clear_stale_checks: bool = False
+    owner: str,
+    dry_run: bool,
+    clear_stale_checks: bool = False,
+    adopt_renamed_checks: bool = False,
 ):
     async def worker(repo: Repo) -> RepoResult:
         # Contexts to require are derived from a recent PR's check runs when
@@ -1306,17 +1364,43 @@ def make_branch_protection_worker(
 
         existing = target.current_contexts()
         stale_retained = False
+        rename_candidate = False
         pending_note = None
         if contexts and existing:
             reconciled = _reconcile_reusable_prefix(contexts, existing)
             if reconciled != sorted(set(contexts)):
-                pending_note = (
-                    f"kept {', '.join(existing)} over sampled "
-                    f"{', '.join(sorted(set(contexts)))} "
-                    "(reusable-workflow check-name inconsistency across runs)"
+                base_branch_checks = await _base_branch_check_names(
+                    owner, repo.name, repo.default_branch
                 )
-                contexts = reconciled
-                stale_retained = True
+                reconciled = _reconcile_reusable_prefix(
+                    contexts,
+                    existing,
+                    base_branch_checks,
+                    prefer_sampled=adopt_renamed_checks,
+                )
+                renamed = sorted(set(existing) - set(reconciled) - set(contexts))
+                if reconciled != sorted(set(contexts)):
+                    kept = sorted(set(reconciled) - set(contexts))
+                    pending_note = (
+                        f"kept {', '.join(kept)} over sampled "
+                        f"{', '.join(sorted(set(contexts)))} "
+                        "(reusable-workflow check-name inconsistency across runs; "
+                        "if this is a real rename, rerun with --adopt-renamed-checks)"
+                    )
+                    contexts = reconciled
+                    stale_retained = True
+                    rename_candidate = True
+                elif renamed:
+                    reason = (
+                        "--adopt-renamed-checks"
+                        if adopt_renamed_checks
+                        else f"absent from recent {repo.default_branch} check runs"
+                    )
+                    pending_note = (
+                        f"dropped {', '.join(renamed)} for sampled "
+                        f"{', '.join(sorted(set(contexts)))} ({reason})"
+                    )
+                    contexts = reconciled
         if not pr_head_shas:
             pending_note = "no pull requests found yet, requiring none for now"
         elif not contexts and existing and not clear_stale_checks:
@@ -1337,7 +1421,10 @@ def make_branch_protection_worker(
 
         require_desc = ", ".join(contexts) if contexts else "(none yet)"
         suffix = f"; {pending_note}" if pending_note else ""
-        tag = Tag.APPLIED if contexts else Tag.APPLIED_NO_CHECKS
+        if rename_candidate:
+            tag = Tag.RENAME_CANDIDATE
+        else:
+            tag = Tag.APPLIED if contexts else Tag.APPLIED_NO_CHECKS
         ok_status = Status.LIMITED if stale_retained else Status.OK
         unchanged_status = (
             Status.LIMITED_UNCHANGED if stale_retained else Status.UNCHANGED
@@ -1375,13 +1462,14 @@ def make_branch_protection_worker(
             evaluate_mode = any(
                 rs.get("enforcement") == "evaluate" for rs in repo_rulesets
             )
-            applied_tag = (
-                Tag.RULESET_EVALUATE_MODE
-                if evaluate_mode
-                else (
-                    Tag.APPLIED_RULESET if mechanism == "ruleset" else Tag.APPLIED_BOTH
-                )
-            )
+            if evaluate_mode:
+                applied_tag = Tag.RULESET_EVALUATE_MODE
+            elif rename_candidate:
+                applied_tag = Tag.RENAME_CANDIDATE
+            elif mechanism == "ruleset":
+                applied_tag = Tag.APPLIED_RULESET
+            else:
+                applied_tag = Tag.APPLIED_BOTH
             limited = evaluate_mode or stale_retained
             result_ok = Status.LIMITED if limited else Status.OK
             result_unchanged = Status.LIMITED_UNCHANGED if limited else Status.UNCHANGED
@@ -1444,6 +1532,7 @@ def make_branch_protection_worker(
                     repo,
                     result_line(repo.name, detail, unchanged_status),
                     unchanged_status,
+                    tag=Tag.RENAME_CANDIDATE if rename_candidate else None,
                 )
             was_desc = ", ".join(existing) if existing else "(none yet)"
             detail = (
@@ -1493,12 +1582,16 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             await default_owner(),
             args.dry_run,
             clear_stale_checks=getattr(args, "clear_stale_checks", False),
+            adopt_renamed_checks=getattr(args, "adopt_renamed_checks", False),
         ),
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
 
-    applied = [r for r in results if r.tag == Tag.APPLIED]
+    rename_candidates = sorted(
+        r.repo.name for r in results if r.tag == Tag.RENAME_CANDIDATE
+    )
+    applied = [r for r in results if r.tag in (Tag.APPLIED, Tag.RENAME_CANDIDATE)]
     applied_no_checks = sorted(
         r.repo.name for r in results if r.tag == Tag.APPLIED_NO_CHECKS
     )
@@ -1538,6 +1631,11 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
         "  Skipped (plan doesn't allow branch protection on private repos): "
         f"{' '.join(skipped_no_plan) or 'none'}"
     )
+    if rename_candidates:
+        print(
+            "  Candidates for --adopt-renamed-checks (a required check looks "
+            f"renamed on an open PR): {' '.join(rename_candidates)}"
+        )
     return 0
 
 
@@ -2359,6 +2457,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "drop required status checks for a repo whose recent PRs yield no "
             "sampleable check runs (default: keep the existing ones)"
+        ),
+    )
+    protection_sync.add_argument(
+        "--adopt-renamed-checks",
+        action="store_true",
+        help=(
+            "when a required check looks renamed on an open PR (e.g. "
+            "'test / Tests' -> 'Tests'), adopt the sampled name instead of "
+            "keeping the old one, even before the rename lands on the default "
+            "branch (default: keep the old name until the base branch confirms)"
         ),
     )
     protection_sync.set_defaults(func=cmd_protection_sync)

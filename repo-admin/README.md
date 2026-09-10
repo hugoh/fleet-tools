@@ -53,8 +53,8 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   title (`squash_merge_commit_title=PR_TITLE`) for repos where `semantic-pr`
   is already a required status check — so it trails `protection sync` and
   needs no opt-in list.
-- **`protection sync [--dry-run] [--clear-stale-checks]`** — requires
-  status checks to pass and a
+- **`protection sync [--dry-run] [--clear-stale-checks]
+  [--adopt-renamed-checks]`** — requires status checks to pass and a
   PR (0 approvals needed, no direct pushes) before merging, matching the
   convention `go-tools`' `mise run gh-repo-setup` already established.
   Required contexts are detected from the most recent pull request's check
@@ -68,8 +68,13 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   stale `check` context. GitHub sometimes reports that check bare (`lint`)
   on one run and prefixed (`hk / lint`) on another; when a sampled context
   is only the prefix-stripped/-added form of one already required, the
-  existing spelling is kept rather than switching the gate to a name
-  `main`'s runs never report. The required-checks gate is read and written
+  existing spelling is kept — unless recent default-branch commits show the
+  old spelling is gone and the new one has taken over, which marks a genuine
+  rename and the sample wins. When the rename lives only on an open PR (so the
+  base branch still reports the old name and the blocked PR is the one doing
+  the rename), `--adopt-renamed-checks` takes the sampled name anyway — the
+  run's summary lists such repos as candidates for the flag.
+  The required-checks gate is read and written
   wherever it lives — classic branch protection, a repository ruleset's
   `required_status_checks` rule, or both; a ruleset is updated via a
   whole-object round-trip PUT that preserves `bypass_actors`, `conditions`,
