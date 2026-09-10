@@ -997,9 +997,14 @@ def _branch_protection_worker(
     clear_stale_checks=False,
     repo_rulesets=(),
     org_rulesets=(),
+    base_checks=(),
+    adopt_renamed_checks=False,
 ):
     async def fake_shas(owner, name):
         return list(shas)
+
+    async def fake_base_checks(owner, name, default_branch):
+        return set(base_checks)
 
     async def fake_contexts(owner, name, shas, own_reusable_job_prefixes=None):
         return list(contexts)
@@ -1031,9 +1036,13 @@ def _branch_protection_worker(
     monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
     monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
     monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
+    monkeypatch.setattr(repo_admin, "_base_branch_check_names", fake_base_checks)
     monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
     worker = repo_admin.make_branch_protection_worker(
-        owner="hugoh", dry_run=dry_run, clear_stale_checks=clear_stale_checks
+        owner="hugoh",
+        dry_run=dry_run,
+        clear_stale_checks=clear_stale_checks,
+        adopt_renamed_checks=adopt_renamed_checks,
     )
     return (worker, calls) if track_calls else worker
 
@@ -1190,6 +1199,140 @@ def test_reconcile_reusable_prefix_does_not_touch_unrelated_contexts():
         "hk / lint",
     ]
     assert repo_admin._reconcile_reusable_prefix([], ["hk / lint"]) == []
+
+
+def test_reconcile_reusable_prefix_honours_sample_when_base_branch_renamed():
+    # `main` runs report bare `Tests`; the required gate still names the old
+    # `test / Tests`. That's a rename, not per-run flakiness -- take the sample.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["Tests"], ["test / Tests"], base_branch_checks={"Tests"}
+    ) == ["Tests"]
+
+
+def test_reconcile_reusable_prefix_keeps_existing_when_base_branch_confirms_it():
+    # `main` still reports the prefixed `hk / lint`, so the bare `lint` on the
+    # PR is the known cross-run inconsistency -- keep the existing spelling.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["lint"], ["hk / lint"], base_branch_checks={"hk / lint"}
+    ) == ["hk / lint"]
+
+
+def test_reconcile_reusable_prefix_keeps_existing_when_base_branch_inconclusive():
+    assert repo_admin._reconcile_reusable_prefix(
+        ["lint"], ["hk / lint"], base_branch_checks=set()
+    ) == ["hk / lint"]
+
+
+async def test_base_branch_check_names_collects_github_actions_run_names(monkeypatch):
+    async def fake_api_json(method, path, **kwargs):
+        assert kwargs["params"]["sha"] == "main"
+        return [{"sha": "c1"}, {"sha": "c2"}]
+
+    async def fake_runs(owner, name, sha):
+        return {
+            "c1": [_run("Tests", "success")],
+            "c2": [_run("check / lint", "success")],
+        }[sha]
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    monkeypatch.setattr(repo_admin, "_github_actions_check_runs", fake_runs)
+    assert await repo_admin._base_branch_check_names("hugoh", "repo", "main") == {
+        "Tests",
+        "check / lint",
+    }
+
+
+def test_reconcile_reusable_prefix_prefer_sampled_overrides_heuristic():
+    assert repo_admin._reconcile_reusable_prefix(
+        ["Tests"], ["test / Tests"], prefer_sampled=True
+    ) == ["Tests"]
+
+
+async def test_branch_protection_worker_adopts_renamed_gate_confirmed_by_base_branch(
+    monkeypatch,
+):
+    worker, calls = _branch_protection_worker(
+        monkeypatch,
+        dry_run=False,
+        shas=["prsha"],
+        contexts=["Tests"],
+        current=_protection_state(contexts=["test / Tests"]),
+        base_checks=["Tests"],
+        track_calls=True,
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert "protected (Tests)" in result.line
+    assert "PUT" in calls
+
+
+async def test_branch_protection_worker_adopt_renamed_checks_flag_breaks_deadlock(
+    monkeypatch,
+):
+    # The rename lives only on the open PR; `main` still reports `test / Tests`,
+    # so the base-branch check can't confirm it. --adopt-renamed-checks trusts
+    # the PR sample and swaps the gate anyway.
+    worker, calls = _branch_protection_worker(
+        monkeypatch,
+        dry_run=False,
+        shas=["prsha"],
+        contexts=["Tests"],
+        current=_protection_state(contexts=["test / Tests"]),
+        base_checks=["test / Tests"],
+        adopt_renamed_checks=True,
+        track_calls=True,
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert "protected (Tests)" in result.line
+    assert "PUT" in calls
+
+
+async def test_branch_protection_worker_without_flag_keeps_stale_gate_on_deadlock(
+    monkeypatch,
+):
+    worker, calls = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["prsha"],
+        contexts=["Tests"],
+        current=_protection_state(contexts=["test / Tests"]),
+        base_checks=["test / Tests"],
+        track_calls=True,
+    )
+    result = await worker(REPO)
+    assert "PUT" not in calls
+    assert "kept test / Tests over sampled Tests" in result.line
+    assert result.tag == repo_admin.Tag.RENAME_CANDIDATE
+
+
+async def test_cmd_protection_sync_lists_adopt_renamed_checks_candidates(
+    monkeypatch, capsys
+):
+    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
+        return [REPO]
+
+    async def fake_run_parallel(
+        repos, worker, *, verbose=False, jobs=None, dry_run=False
+    ):
+        return [
+            repo_admin.RepoResult(
+                REPO,
+                "repo: kept test / Tests over sampled Tests",
+                Status.LIMITED_UNCHANGED,
+                tag=repo_admin.Tag.RENAME_CANDIDATE,
+            )
+        ]
+
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
+    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    out = capsys.readouterr().out
+    assert "Candidates for --adopt-renamed-checks" in out
+    assert out.rstrip().endswith(": repo")
+    assert "Would be (with required status checks): 1" in out
 
 
 async def test_branch_protection_worker_keeps_existing_check_name_on_prefix_flip(
