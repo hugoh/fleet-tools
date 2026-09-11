@@ -17,6 +17,13 @@ def _instant_backoff(monkeypatch):
     monkeypatch.setattr(client, "RETRY_WAIT_JITTER", 0.0)
 
 
+def _rate_limited_response(message="rate limited"):
+    return httpx.Response(
+        200,
+        json={"data": None, "errors": [{"type": "RATE_LIMITED", "message": message}]},
+    )
+
+
 async def test_error_message_prefers_json_message_field(httpx2_mock: respx.Router):
     httpx2_mock.get(f"{API_BASE}/x").mock(
         return_value=httpx.Response(404, json={"message": "not found"})
@@ -312,13 +319,7 @@ async def test_graphql_retries_rate_limited_error_then_succeeds(
 ):
     route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
         side_effect=[
-            httpx.Response(
-                200,
-                json={
-                    "data": None,
-                    "errors": [{"type": "RATE_LIMITED", "message": "rate limited"}],
-                },
-            ),
+            _rate_limited_response(),
             httpx.Response(200, json={"data": {"ok": True}}),
         ]
     )
@@ -331,13 +332,7 @@ async def test_graphql_raises_gh_error_after_exhausting_rate_limited_retries(
     httpx2_mock: respx.Router,
 ):
     route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "data": None,
-                "errors": [{"type": "RATE_LIMITED", "message": "rate limited"}],
-            },
-        )
+        return_value=_rate_limited_response()
     )
     with pytest.raises(GhError, match="rate limited"):
         await graphql("query { ok }")
@@ -358,13 +353,7 @@ async def test_graphql_total_requests_bounded_by_single_retry_budget(
     route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
         side_effect=[
             httpx2.ConnectError("boom"),
-            httpx.Response(
-                200,
-                json={
-                    "data": None,
-                    "errors": [{"type": "RATE_LIMITED", "message": "rate limited"}],
-                },
-            ),
+            _rate_limited_response(),
             httpx.Response(200, json={"data": {"ok": True}}),
         ]
     )
