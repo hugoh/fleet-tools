@@ -43,9 +43,7 @@ def test_unmatched_include_forks_empty_for_no_include_forks():
     assert unmatched_include_forks(set(), REPOS_JSON) == set()
 
 
-async def test_list_repos_raises_gh_error_for_unmatched_explicit_repo(
-    monkeypatch, httpx2_mock: respx.Router
-):
+def _mock_list_repos_endpoints(monkeypatch, httpx2_mock: respx.Router):
     monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
     httpx2_mock.get(f"{API_BASE}/user").mock(
         return_value=httpx.Response(200, json={"login": "someone-else"})
@@ -53,6 +51,12 @@ async def test_list_repos_raises_gh_error_for_unmatched_explicit_repo(
     httpx2_mock.get(f"{API_BASE}/users/hugoh/repos").mock(
         return_value=httpx.Response(200, json=REPOS_JSON)
     )
+
+
+async def test_list_repos_raises_gh_error_for_unmatched_explicit_repo(
+    monkeypatch, httpx2_mock: respx.Router
+):
+    _mock_list_repos_endpoints(monkeypatch, httpx2_mock)
     with pytest.raises(GhError, match="typo-repo"):
         await lib.list_repos(
             "hugoh", only={"public-repo", "typo-repo"}, require_only_match=True
@@ -62,13 +66,7 @@ async def test_list_repos_raises_gh_error_for_unmatched_explicit_repo(
 async def test_list_repos_does_not_raise_when_require_only_match_is_false(
     monkeypatch, httpx2_mock: respx.Router
 ):
-    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
-    httpx2_mock.get(f"{API_BASE}/user").mock(
-        return_value=httpx.Response(200, json={"login": "someone-else"})
-    )
-    httpx2_mock.get(f"{API_BASE}/users/hugoh/repos").mock(
-        return_value=httpx.Response(200, json=REPOS_JSON)
-    )
+    _mock_list_repos_endpoints(monkeypatch, httpx2_mock)
     repos = await lib.list_repos("hugoh", only={"public-repo", "typo-repo"})
     assert [r.name for r in repos] == ["public-repo"]
 
@@ -79,13 +77,7 @@ async def test_list_repos_does_not_raise_when_explicit_repo_is_only_excluded_by_
     # A real repo named explicitly but also excluded via `skip` (e.g.
     # branch-protection-exclude.txt) isn't a typo -- require_only_match
     # checks against every fetched repo name, before skip is applied.
-    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
-    httpx2_mock.get(f"{API_BASE}/user").mock(
-        return_value=httpx.Response(200, json={"login": "someone-else"})
-    )
-    httpx2_mock.get(f"{API_BASE}/users/hugoh/repos").mock(
-        return_value=httpx.Response(200, json=REPOS_JSON)
-    )
+    _mock_list_repos_endpoints(monkeypatch, httpx2_mock)
     repos = await lib.list_repos(
         "hugoh",
         only={"public-repo"},
@@ -100,25 +92,25 @@ async def test_default_owner_uses_gh_owner_env_without_a_network_call(monkeypatc
     assert await lib.default_owner() == "env-owner"
 
 
+def _mock_authenticated_user(monkeypatch, httpx2_mock: respx.Router):
+    monkeypatch.delenv("GH_OWNER", raising=False)
+    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
+    return httpx2_mock.get(f"{API_BASE}/user").mock(
+        return_value=httpx.Response(200, json={"login": "authenticated-user"})
+    )
+
+
 async def test_default_owner_falls_back_to_authenticated_user(
     monkeypatch, httpx2_mock: respx.Router
 ):
-    monkeypatch.delenv("GH_OWNER", raising=False)
-    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
-    httpx2_mock.get(f"{API_BASE}/user").mock(
-        return_value=httpx.Response(200, json={"login": "authenticated-user"})
-    )
+    _mock_authenticated_user(monkeypatch, httpx2_mock)
     assert await lib.default_owner() == "authenticated-user"
 
 
 async def test_default_owner_caches_the_resolved_value(
     monkeypatch, httpx2_mock: respx.Router
 ):
-    monkeypatch.delenv("GH_OWNER", raising=False)
-    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
-    route = httpx2_mock.get(f"{API_BASE}/user").mock(
-        return_value=httpx.Response(200, json={"login": "authenticated-user"})
-    )
+    route = _mock_authenticated_user(monkeypatch, httpx2_mock)
     await lib.default_owner()
     await lib.default_owner()
     assert route.call_count == 1
@@ -127,11 +119,7 @@ async def test_default_owner_caches_the_resolved_value(
 async def test_default_owner_concurrent_callers_share_one_request(
     monkeypatch, httpx2_mock: respx.Router
 ):
-    monkeypatch.delenv("GH_OWNER", raising=False)
-    monkeypatch.setattr("asyncgh.client._auth_token", lambda: "fake-token")
-    route = httpx2_mock.get(f"{API_BASE}/user").mock(
-        return_value=httpx.Response(200, json={"login": "authenticated-user"})
-    )
+    route = _mock_authenticated_user(monkeypatch, httpx2_mock)
     results = await asyncio.gather(*(lib.default_owner() for _ in range(5)))
     assert results == ["authenticated-user"] * 5
     assert route.call_count == 1
@@ -305,13 +293,13 @@ def test_load_secrets_rejects_repo_in_two_bindings(enc_file, monkeypatch):
         lib.load_secrets()
 
 
+def _fake_run_nonzero_exit(cmd, **kwargs):
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no key found")
+
+
 def test_load_secrets_raises_gh_error_on_nonzero_exit(enc_file, monkeypatch):
     enc_file.write_text("placeholder")
-
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no key found")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", _fake_run_nonzero_exit)
     with pytest.raises(GhError, match="no key found"):
         lib.load_secrets()
 
@@ -365,10 +353,7 @@ def test_init_secrets_file_encrypts_template_via_sops_stdin(
 
 
 def test_init_secrets_file_raises_gh_error_on_nonzero_exit(enc_file, monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no key found")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", _fake_run_nonzero_exit)
     with pytest.raises(GhError, match="no key found"):
         lib.init_secrets_file("NAME: ''\n")
     assert not enc_file.exists()

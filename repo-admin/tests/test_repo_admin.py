@@ -1201,6 +1201,23 @@ def test_reconcile_reusable_prefix_does_not_touch_unrelated_contexts():
     assert repo_admin._reconcile_reusable_prefix([], ["hk / lint"]) == []
 
 
+def test_reconcile_reusable_prefix_does_not_guess_on_ambiguous_match():
+    # Two existing checks both end in " / test" -- picking either would
+    # silently and arbitrarily bind "test" to the wrong required check.
+    # Treat it as unmatched and keep the sampled spelling.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["test"], ["backend / test", "frontend / test"]
+    ) == ["test"]
+
+
+def test_reconcile_reusable_prefix_does_not_guess_on_ambiguous_match_reverse():
+    # "ci / build / test" ambiguously matches both "build / test" and "test"
+    # as prefix-stripped existing forms -- same ambiguity, other direction.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["ci / build / test"], ["build / test", "test"]
+    ) == ["ci / build / test"]
+
+
 def test_reconcile_reusable_prefix_honours_sample_when_base_branch_renamed():
     # `main` runs report bare `Tests`; the required gate still names the old
     # `test / Tests`. That's a rename, not per-run flakiness -- take the sample.
@@ -1306,27 +1323,38 @@ async def test_branch_protection_worker_without_flag_keeps_stale_gate_on_deadloc
     assert result.tag == repo_admin.Tag.RENAME_CANDIDATE
 
 
-async def test_cmd_protection_sync_lists_adopt_renamed_checks_candidates(
-    monkeypatch, capsys
-):
+def _stub_cmd_protection_sync(monkeypatch, *, results=()):
+    seen = {}
+
     async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
         return [REPO]
 
     async def fake_run_parallel(
         repos, worker, *, verbose=False, jobs=None, dry_run=False
     ):
-        return [
+        seen["verbose"] = verbose
+        return list(results)
+
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
+    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+    return seen
+
+
+async def test_cmd_protection_sync_lists_adopt_renamed_checks_candidates(
+    monkeypatch, capsys
+):
+    _stub_cmd_protection_sync(
+        monkeypatch,
+        results=[
             repo_admin.RepoResult(
                 REPO,
                 "repo: kept test / Tests over sampled Tests",
                 Status.LIMITED_UNCHANGED,
                 tag=repo_admin.Tag.RENAME_CANDIDATE,
             )
-        ]
-
-    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
-    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
-    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+        ],
+    )
     args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
     await repo_admin.cmd_protection_sync(args)
     out = capsys.readouterr().out
@@ -1412,20 +1440,7 @@ async def test_cmd_protection_sync_excludes_even_without_explicit_skip(monkeypat
 
 
 async def test_cmd_protection_sync_passes_verbose_to_run_parallel(monkeypatch):
-    seen = {}
-
-    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
-        return [REPO]
-
-    async def fake_run_parallel(
-        repos, worker, *, verbose=False, jobs=None, dry_run=False
-    ):
-        seen["verbose"] = verbose
-        return []
-
-    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
-    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
-    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+    seen = _stub_cmd_protection_sync(monkeypatch, results=[])
     args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=True)
     await repo_admin.cmd_protection_sync(args)
     assert seen["verbose"] is True
@@ -1437,24 +1452,17 @@ async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
     # A dry run must surface which private repos it can't protect due to plan
     # limits -- previously this summary only printed on a real apply, so a
     # dry run gave no indication a repo was silently unfixable.
-    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
-        return [REPO]
-
-    async def fake_run_parallel(
-        repos, worker, *, verbose=False, jobs=None, dry_run=False
-    ):
-        return [
+    _stub_cmd_protection_sync(
+        monkeypatch,
+        results=[
             repo_admin.RepoResult(
                 REPO,
                 "repo: skipped",
                 Status.LIMITED_UNCHANGED,
                 tag=repo_admin.Tag.SKIPPED_NO_PLAN,
             )
-        ]
-
-    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
-    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
-    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+        ],
+    )
     args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
     await repo_admin.cmd_protection_sync(args)
     out = capsys.readouterr().out
@@ -1469,9 +1477,7 @@ async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
 # ---------------------------------------------------------------------------
 
 
-async def test_check_run_contexts_keeps_reusable_workflow_check_by_job_prefix(
-    monkeypatch,
-):
+def _patch_hk_lint_check_run(monkeypatch):
     async def fake_api_json(method, path, **kwargs):
         if path.endswith("/check-runs"):
             return _check_runs_response([_run("hk / lint", "success", suite=999)])
@@ -1487,6 +1493,12 @@ async def test_check_run_contexts_keeps_reusable_workflow_check_by_job_prefix(
         raise AssertionError(path)
 
     monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+
+
+async def test_check_run_contexts_keeps_reusable_workflow_check_by_job_prefix(
+    monkeypatch,
+):
+    _patch_hk_lint_check_run(monkeypatch)
     contexts = await repo_admin._check_run_contexts("hugoh", "repo", ["sha"], {"hk"})
     assert contexts == ["hk / lint"]
 
@@ -1495,22 +1507,7 @@ async def test_check_run_contexts_drops_reusable_check_without_prefix(monkeypatc
     """The exact C2 symptom: a `hk / lint` check whose check-suite maps to an
     external child workflow run is dropped when the job prefix isn't known.
     """
-
-    async def fake_api_json(method, path, **kwargs):
-        if path.endswith("/check-runs"):
-            return _check_runs_response([_run("hk / lint", "success", suite=999)])
-        if path.endswith("/actions/runs"):
-            return {
-                "workflow_runs": [
-                    {
-                        "check_suite_id": 999,
-                        "path": "hugoh/gh-workflows/.github/workflows/hk.yml@abc",
-                    }
-                ]
-            }
-        raise AssertionError(path)
-
-    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_hk_lint_check_run(monkeypatch)
     assert await repo_admin._check_run_contexts("hugoh", "repo", ["sha"]) == []
 
 
@@ -1671,9 +1668,7 @@ def test_checks_target_up_to_date_ruleset():
 # ---------------------------------------------------------------------------
 
 
-def _ruleset_worker(monkeypatch, *, dry_run, contexts, repo_rulesets, classic_code=404):
-    calls = []
-
+def _patch_branch_protection_lookups(monkeypatch, *, contexts, matching_rulesets=()):
     async def fake_shas(owner, name):
         return ["sha"]
 
@@ -1684,7 +1679,19 @@ def _ruleset_worker(monkeypatch, *, dry_run, contexts, repo_rulesets, classic_co
         return {"hk"}
 
     async def fake_rulesets(owner, name, default_branch):
-        return list(repo_rulesets), []
+        return list(matching_rulesets), []
+
+    monkeypatch.setattr(repo_admin, "_recent_pr_head_shas", fake_shas)
+    monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
+    monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
+    monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
+
+
+def _ruleset_worker(monkeypatch, *, dry_run, contexts, repo_rulesets, classic_code=404):
+    calls = []
+    _patch_branch_protection_lookups(
+        monkeypatch, contexts=contexts, matching_rulesets=repo_rulesets
+    )
 
     async def fake_api_raw(method, path, **kwargs):
         calls.append((method, path, kwargs.get("json")))
@@ -1692,10 +1699,6 @@ def _ruleset_worker(monkeypatch, *, dry_run, contexts, repo_rulesets, classic_co
             return _FakeResponse(classic_code)
         return _FakeResponse(200)
 
-    monkeypatch.setattr(repo_admin, "_recent_pr_head_shas", fake_shas)
-    monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
-    monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
-    monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
     monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
     worker = repo_admin.make_branch_protection_worker(owner="hugoh", dry_run=dry_run)
     return worker, calls
@@ -1826,18 +1829,9 @@ def _plan_gated_ruleset_worker(
     matching=(),
 ):
     calls = []
-
-    async def fake_shas(owner, name):
-        return ["sha"]
-
-    async def fake_contexts(owner, name, shas, own_reusable_job_prefixes=None):
-        return list(contexts)
-
-    async def fake_prefixes(owner, name, ref):
-        return {"hk"}
-
-    async def fake_rulesets(owner, name, default_branch):
-        return list(matching), []
+    _patch_branch_protection_lookups(
+        monkeypatch, contexts=contexts, matching_rulesets=matching
+    )
 
     async def fake_api_raw(method, path, **kwargs):
         calls.append((method, path, kwargs.get("json")))
@@ -1849,10 +1843,6 @@ def _plan_gated_ruleset_worker(
             return _FakeResponseWithJson(200, list(ruleset_listing))
         return _FakeResponse(200)
 
-    monkeypatch.setattr(repo_admin, "_recent_pr_head_shas", fake_shas)
-    monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
-    monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
-    monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
     monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
     worker = repo_admin.make_branch_protection_worker(owner="hugoh", dry_run=dry_run)
     return worker, calls
@@ -2646,6 +2636,32 @@ async def test_cmd_secrets_sync_dry_run_still_reads_the_mapping(monkeypatch):
     assert seen_only == [{"repo-a"}]
 
 
+def _count_default_owner_calls(monkeypatch):
+    calls = []
+    real_default_owner = repo_admin.default_owner
+
+    async def counting_default_owner():
+        calls.append(1)
+        return await real_default_owner()
+
+    monkeypatch.setattr(repo_admin, "default_owner", counting_default_owner)
+    return calls
+
+
+async def test_cmd_secrets_sync_resolves_owner_once(monkeypatch):
+    monkeypatch.setattr(
+        repo_admin.lib, "load_secrets", lambda: {"NAME_A": [_binding(["repo-a"], "va")]}
+    )
+    _, fake_list_repos = _recording_list_repos()
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    calls = _count_default_owner_calls(monkeypatch)
+    args = argparse.Namespace(
+        dry_run=False, repos=[], skip=None, secret=None, verbose=False
+    )
+    assert await repo_admin.cmd_secrets_sync(args) == 0
+    assert calls == [1]
+
+
 def test_secrets_sync_subcommand_is_registered_in_parser():
     args = repo_admin.build_parser().parse_args(
         ["secrets", "sync", "--dry-run", "--secret", "NAME"]
@@ -2763,12 +2779,7 @@ async def test_cmd_variables_sync_defaults_to_all_configured_variables(monkeypat
     monkeypatch.setattr(
         repo_admin.lib, "decrypt_variables", lambda: {"A": "1", "B": "2"}
     )
-    seen_only = []
-
-    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
-        seen_only.append(only)
-        return []
-
+    seen_only, fake_list_repos = _recording_list_repos()
     monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
     args = argparse.Namespace(
         dry_run=False, repos=[], skip=None, variable=None, verbose=False
@@ -2786,6 +2797,19 @@ async def test_cmd_variables_sync_errors_on_unknown_variable_name(monkeypatch, c
     err = capsys.readouterr().err
     assert "NOPE" in err
     assert "config/variables.yaml" in err
+
+
+async def test_cmd_variables_sync_resolves_owner_once(monkeypatch):
+    monkeypatch.setattr(repo_admin.lib, "default_variables", lambda: {"A": ["repo-a"]})
+    monkeypatch.setattr(repo_admin.lib, "decrypt_variables", lambda: {"A": "1"})
+    _, fake_list_repos = _recording_list_repos()
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    calls = _count_default_owner_calls(monkeypatch)
+    args = argparse.Namespace(
+        dry_run=False, repos=[], skip=None, variable=None, verbose=False
+    )
+    assert await repo_admin.cmd_variables_sync(args) == 0
+    assert calls == [1]
 
 
 def test_variables_sync_subcommand_is_registered_in_parser():
