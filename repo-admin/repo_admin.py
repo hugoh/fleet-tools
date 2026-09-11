@@ -65,6 +65,7 @@ import copy
 import enum
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from getpass import getpass
@@ -957,10 +958,10 @@ def _reconcile_reusable_prefix(
         if ctx in existing:
             out.append(ctx)
             continue
-        equiv = next(
-            (e for e in existing if e.endswith(f" / {ctx}") or ctx.endswith(f" / {e}")),
-            None,
-        )
+        candidates = [
+            e for e in existing if e.endswith(f" / {ctx}") or ctx.endswith(f" / {e}")
+        ]
+        equiv = candidates[0] if len(candidates) == 1 else None
         take_sample = (
             equiv is None
             or prefer_sampled
@@ -2012,69 +2013,6 @@ def make_variables_sync_worker(owner: str, dry_run: bool, name: str, value: str)
     return worker
 
 
-async def _run_value_sync(
-    args: argparse.Namespace,
-    *,
-    name_filter: str | None,
-    config: dict[str, list[str]],
-    decrypt,
-    make_worker,
-    plaintext_file: str,
-    enc_file: str,
-) -> int:
-    names = as_set(name_filter)
-    if names:
-        unknown = names - set(config)
-        if unknown:
-            print(
-                f"error: not in {plaintext_file}: {', '.join(sorted(unknown))}",
-                file=sys.stderr,
-            )
-            return 1
-    else:
-        names = set(config)
-
-    values = decrypt() if not args.dry_run else {}
-
-    only = set(args.repos)
-    skip = as_set(args.skip)
-    failed = False
-    for name in sorted(names):
-        target_repos = set(config[name])
-        if only:
-            target_repos &= only
-        if skip:
-            target_repos -= skip
-
-        if not target_repos:
-            _echo_name_line(f"== {name} == (no matching repos, skipping)")
-            continue
-
-        if not args.dry_run and name not in values:
-            _echo_name_line(
-                f"error: {name!r} has no value in {enc_file}", file=sys.stderr
-            )
-            failed = True
-            continue
-
-        _echo_name_line(f"== {name} ==")
-        repos = await list_repos(await default_owner(), only=target_repos)
-        try:
-            await run_parallel(
-                repos,
-                make_worker(
-                    await default_owner(), args.dry_run, name, values.get(name, "")
-                ),
-                verbose=args.verbose,
-                dry_run=args.dry_run,
-            )
-        except GhError as exc:
-            print(exc, file=sys.stderr)
-            failed = True
-
-    return 1 if failed else 0
-
-
 def _scoped(repos, only: set[str] | None, skip: set[str] | None) -> set[str]:
     scoped = set(repos)
     if only:
@@ -2082,6 +2020,52 @@ def _scoped(repos, only: set[str] | None, skip: set[str] | None) -> set[str]:
     if skip:
         scoped -= skip
     return scoped
+
+
+async def _run_name_sync(
+    args: argparse.Namespace,
+    *,
+    names: set[str],
+    bindings_for: Callable[
+        [str, set[str], set[str] | None], list[tuple[set[str], str]]
+    ],
+    has_value: Callable[[str, str], bool],
+    missing_value_error: Callable[[str, set[str]], str],
+    make_worker,
+    owner: str,
+) -> int:
+    only = set(args.repos)
+    skip = as_set(args.skip)
+    failed = False
+    for name in sorted(names):
+        bindings = bindings_for(name, only, skip)
+        if not any(repos for repos, _ in bindings):
+            _echo_name_line(f"== {name} == (no matching repos, skipping)")
+            continue
+
+        _echo_name_line(f"== {name} ==")
+        for target_repos, value in bindings:
+            if not target_repos:
+                continue
+            if not args.dry_run and not has_value(name, value):
+                _echo_name_line(
+                    missing_value_error(name, target_repos), file=sys.stderr
+                )
+                failed = True
+                continue
+            repos = await list_repos(owner, only=target_repos)
+            try:
+                await run_parallel(
+                    repos,
+                    make_worker(owner, args.dry_run, name, value),
+                    verbose=args.verbose,
+                    dry_run=args.dry_run,
+                )
+            except GhError as exc:
+                print(exc, file=sys.stderr)
+                failed = True
+
+    return 1 if failed else 0
 
 
 async def cmd_secrets_sync(args: argparse.Namespace) -> int:
@@ -2103,55 +2087,58 @@ async def cmd_secrets_sync(args: argparse.Namespace) -> int:
     else:
         names = set(config)
 
-    only = set(args.repos)
-    skip = as_set(args.skip)
-    owner = await default_owner()
-    failed = False
-    for name in sorted(names):
-        bindings = [
+    def bindings_for(name, only, skip):
+        return [
             (_scoped(binding["repos"], only, skip), binding["value"])
             for binding in config[name]
         ]
-        if not any(repos for repos, _ in bindings):
-            _echo_name_line(f"== {name} == (no matching repos, skipping)")
-            continue
 
-        _echo_name_line(f"== {name} ==")
-        for target_repos, value in bindings:
-            if not target_repos:
-                continue
-            if not args.dry_run and not value:
-                _echo_name_line(
-                    f"error: {name!r} has an empty value for "
-                    f"{', '.join(sorted(target_repos))} in config/secrets.enc.yaml",
-                    file=sys.stderr,
-                )
-                failed = True
-                continue
-            repos = await list_repos(owner, only=target_repos)
-            try:
-                await run_parallel(
-                    repos,
-                    make_secrets_sync_worker(owner, args.dry_run, name, value),
-                    verbose=args.verbose,
-                    dry_run=args.dry_run,
-                )
-            except GhError as exc:
-                print(exc, file=sys.stderr)
-                failed = True
+    def missing_value_error(name, target_repos):
+        return (
+            f"error: {name!r} has an empty value for "
+            f"{', '.join(sorted(target_repos))} in config/secrets.enc.yaml"
+        )
 
-    return 1 if failed else 0
+    return await _run_name_sync(
+        args,
+        names=names,
+        bindings_for=bindings_for,
+        has_value=lambda name, value: bool(value),
+        missing_value_error=missing_value_error,
+        make_worker=make_secrets_sync_worker,
+        owner=await default_owner(),
+    )
 
 
 async def cmd_variables_sync(args: argparse.Namespace) -> int:
-    return await _run_value_sync(
+    config = lib.default_variables()
+    names = as_set(args.variable)
+    if names:
+        unknown = names - set(config)
+        if unknown:
+            print(
+                f"error: not in config/variables.yaml: {', '.join(sorted(unknown))}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        names = set(config)
+
+    values = lib.decrypt_variables() if not args.dry_run else {}
+
+    def bindings_for(name, only, skip):
+        return [(_scoped(config[name], only, skip), values.get(name, ""))]
+
+    return await _run_name_sync(
         args,
-        name_filter=args.variable,
-        config=lib.default_variables(),
-        decrypt=lib.decrypt_variables,
+        names=names,
+        bindings_for=bindings_for,
+        has_value=lambda name, _value: name in values,
+        missing_value_error=lambda name, _target_repos: (
+            f"error: {name!r} has no value in config/variables.enc.yaml"
+        ),
         make_worker=make_variables_sync_worker,
-        plaintext_file="config/variables.yaml",
-        enc_file="config/variables.enc.yaml",
+        owner=await default_owner(),
     )
 
 

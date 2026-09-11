@@ -1201,6 +1201,23 @@ def test_reconcile_reusable_prefix_does_not_touch_unrelated_contexts():
     assert repo_admin._reconcile_reusable_prefix([], ["hk / lint"]) == []
 
 
+def test_reconcile_reusable_prefix_does_not_guess_on_ambiguous_match():
+    # Two existing checks both end in " / test" -- picking either would
+    # silently and arbitrarily bind "test" to the wrong required check.
+    # Treat it as unmatched and keep the sampled spelling.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["test"], ["backend / test", "frontend / test"]
+    ) == ["test"]
+
+
+def test_reconcile_reusable_prefix_does_not_guess_on_ambiguous_match_reverse():
+    # "ci / build / test" ambiguously matches both "build / test" and "test"
+    # as prefix-stripped existing forms -- same ambiguity, other direction.
+    assert repo_admin._reconcile_reusable_prefix(
+        ["ci / build / test"], ["build / test", "test"]
+    ) == ["ci / build / test"]
+
+
 def test_reconcile_reusable_prefix_honours_sample_when_base_branch_renamed():
     # `main` runs report bare `Tests`; the required gate still names the old
     # `test / Tests`. That's a rename, not per-run flakiness -- take the sample.
@@ -2646,6 +2663,27 @@ async def test_cmd_secrets_sync_dry_run_still_reads_the_mapping(monkeypatch):
     assert seen_only == [{"repo-a"}]
 
 
+async def test_cmd_secrets_sync_resolves_owner_once(monkeypatch):
+    monkeypatch.setattr(
+        repo_admin.lib, "load_secrets", lambda: {"NAME_A": [_binding(["repo-a"], "va")]}
+    )
+    _, fake_list_repos = _recording_list_repos()
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    calls = []
+    real_default_owner = repo_admin.default_owner
+
+    async def counting_default_owner():
+        calls.append(1)
+        return await real_default_owner()
+
+    monkeypatch.setattr(repo_admin, "default_owner", counting_default_owner)
+    args = argparse.Namespace(
+        dry_run=False, repos=[], skip=None, secret=None, verbose=False
+    )
+    assert await repo_admin.cmd_secrets_sync(args) == 0
+    assert calls == [1]
+
+
 def test_secrets_sync_subcommand_is_registered_in_parser():
     args = repo_admin.build_parser().parse_args(
         ["secrets", "sync", "--dry-run", "--secret", "NAME"]
@@ -2786,6 +2824,31 @@ async def test_cmd_variables_sync_errors_on_unknown_variable_name(monkeypatch, c
     err = capsys.readouterr().err
     assert "NOPE" in err
     assert "config/variables.yaml" in err
+
+
+async def test_cmd_variables_sync_resolves_owner_once(monkeypatch):
+    monkeypatch.setattr(repo_admin.lib, "default_variables", lambda: {"A": ["repo-a"]})
+    monkeypatch.setattr(repo_admin.lib, "decrypt_variables", lambda: {"A": "1"})
+    seen_only = []
+
+    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
+        seen_only.append(only)
+        return []
+
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    calls = []
+    real_default_owner = repo_admin.default_owner
+
+    async def counting_default_owner():
+        calls.append(1)
+        return await real_default_owner()
+
+    monkeypatch.setattr(repo_admin, "default_owner", counting_default_owner)
+    args = argparse.Namespace(
+        dry_run=False, repos=[], skip=None, variable=None, verbose=False
+    )
+    assert await repo_admin.cmd_variables_sync(args) == 0
+    assert calls == [1]
 
 
 def test_variables_sync_subcommand_is_registered_in_parser():
