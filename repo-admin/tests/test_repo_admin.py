@@ -2977,7 +2977,7 @@ def test_config_bootstrap_subcommand_is_registered_in_parser():
 
 def test_activity_subcommand_is_registered_in_parser():
     args = repo_admin.build_parser().parse_args(["activity"])
-    assert args.func == repo_admin.cmd_activity
+    assert args.func == repo_admin.activity.run
     assert args.window_months == 12
     assert args.half_life_days == 30
     assert args.limit == 20
@@ -2990,16 +2990,3 @@ def test_activity_subcommand_accepts_custom_knobs():
     assert args.window_months == 3
     assert args.half_life_days == 7
     assert args.limit == 5
-
-
-async def test_cmd_activity_delegates_to_activity_run(monkeypatch):
-    seen = {}
-
-    async def fake_run(args):
-        seen["args"] = args
-        return 0
-
-    monkeypatch.setattr("activity.run", fake_run)
-    args = argparse.Namespace(window_months=12, half_life_days=30, limit=20)
-    assert await repo_admin.cmd_activity(args) == 0
-    assert seen["args"] is args

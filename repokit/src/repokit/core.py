@@ -13,6 +13,7 @@ default derived from any file.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import sys
 from collections.abc import Awaitable, Callable
@@ -127,18 +128,7 @@ def run_cli(
         return 1
 
 
-async def run_parallel(
-    repos: list[Repo],
-    worker,
-    *,
-    jobs: int = DEFAULT_JOBS,
-    verbose: bool = False,
-    dry_run: bool = False,
-) -> list[RepoResult]:
-    """reconcilekit.run_parallel with GhError bound as the failure exception
-    type. See reconcilekit.kernel for the concurrency, failure-isolation,
-    and quiet-suppression behaviour.
-    """
-    return await _run_parallel(
-        repos, worker, jobs=jobs, verbose=verbose, dry_run=dry_run, error_cls=GhError
-    )
+# reconcilekit.run_parallel with GhError bound as the failure exception type.
+# See reconcilekit.kernel for the concurrency, failure-isolation, and
+# quiet-suppression behaviour.
+run_parallel = functools.partial(_run_parallel, error_cls=GhError)
