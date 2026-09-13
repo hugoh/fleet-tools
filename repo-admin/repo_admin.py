@@ -2383,14 +2383,6 @@ async def cmd_sync(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def cmd_activity(args: argparse.Namespace) -> int:
-    return await activity.run(args)
-
-
-async def cmd_repo_scaffold(args: argparse.Namespace) -> int:
-    return await scaffold.run(args)
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -2431,7 +2423,7 @@ def build_parser() -> argparse.ArgumentParser:
         "scaffold", help="render a new repo's baseline files from templates/"
     )
     scaffold.add_arguments(repo_scaffold)
-    repo_scaffold.set_defaults(func=cmd_repo_scaffold)
+    repo_scaffold.set_defaults(func=scaffold.run)
     resource_verbs("merge").add_parser("sync", parents=[mutating]).set_defaults(
         func=cmd_merge_sync
     )
@@ -2518,7 +2510,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="max repos to show per table, 0 for unlimited (default 20)",
     )
-    activity_parser.set_defaults(func=cmd_activity)
+    activity_parser.set_defaults(func=activity.run)
 
     return parser
 

@@ -109,12 +109,12 @@ def bucket_counts(dates: list[datetime], now: datetime) -> tuple[int, int, int]:
     """Plain commit counts within the last 1/6/12 months, for display
     alongside the decay score.
     """
-    one_month = now.timestamp() - 1 * _MONTH_DAYS * 86400
-    six_months = now.timestamp() - 6 * _MONTH_DAYS * 86400
-    twelve_months = now.timestamp() - 12 * _MONTH_DAYS * 86400
-    commits_1mo = sum(1 for dt in dates if dt.timestamp() >= one_month)
-    commits_6mo = sum(1 for dt in dates if dt.timestamp() >= six_months)
-    commits_12mo = sum(1 for dt in dates if dt.timestamp() >= twelve_months)
+    timestamps = [dt.timestamp() for dt in dates]
+    now_ts = now.timestamp()
+    commits_1mo, commits_6mo, commits_12mo = (
+        sum(1 for ts in timestamps if ts >= now_ts - months * _MONTH_DAYS * 86400)
+        for months in (1, 6, 12)
+    )
     return commits_1mo, commits_6mo, commits_12mo
 
 
