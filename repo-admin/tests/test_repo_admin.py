@@ -39,6 +39,18 @@ def _capturing_list_repos():
     return seen, fake_list_repos
 
 
+def _capturing_list_repos_calls():
+    calls = []
+
+    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
+        calls.append(
+            {"only": only, "skip": skip, "require_only_match": require_only_match}
+        )
+        return []
+
+    return calls, fake_list_repos
+
+
 # ---------------------------------------------------------------------------
 # repos list
 # ---------------------------------------------------------------------------
@@ -1418,25 +1430,49 @@ async def test_branch_protection_worker_apply_ok_when_updating_from_stale_state(
 
 
 async def test_cmd_protection_sync_merges_exclude_list_into_skip(monkeypatch):
-    seen, fake_list_repos = _capturing_list_repos()
+    calls, fake_list_repos = _capturing_list_repos_calls()
     monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
     monkeypatch.setattr(
         repo_admin, "default_branch_protection_exclude", lambda: {"homebrew-tap"}
     )
     args = argparse.Namespace(repos=[], skip="other-repo", dry_run=True, verbose=False)
     await repo_admin.cmd_protection_sync(args)
-    assert seen["skip"] == {"homebrew-tap", "other-repo"}
+    assert calls[0]["skip"] == {"homebrew-tap", "other-repo"}
 
 
 async def test_cmd_protection_sync_excludes_even_without_explicit_skip(monkeypatch):
-    seen, fake_list_repos = _capturing_list_repos()
+    calls, fake_list_repos = _capturing_list_repos_calls()
     monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
     monkeypatch.setattr(
         repo_admin, "default_branch_protection_exclude", lambda: {"homebrew-tap"}
     )
     args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
     await repo_admin.cmd_protection_sync(args)
-    assert seen["skip"] == {"homebrew-tap"}
+    assert calls[0]["skip"] == {"homebrew-tap"}
+
+
+async def test_cmd_protection_sync_fetches_excluded_repos_to_unprotect(monkeypatch):
+    calls, fake_list_repos = _capturing_list_repos_calls()
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(
+        repo_admin, "default_branch_protection_exclude", lambda: {"homebrew-tap"}
+    )
+    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    assert {
+        "only": {"homebrew-tap"},
+        "skip": None,
+        "require_only_match": False,
+    } in calls
+
+
+async def test_cmd_protection_sync_does_not_refetch_when_nothing_excluded(monkeypatch):
+    calls, fake_list_repos = _capturing_list_repos_calls()
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(repo_admin, "default_branch_protection_exclude", set)
+    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    assert len(calls) == 1
 
 
 async def test_cmd_protection_sync_passes_verbose_to_run_parallel(monkeypatch):
@@ -1470,6 +1506,96 @@ async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
     assert (
         "Skipped (plan doesn't allow branch protection on private repos): repo" in out
     )
+
+
+# ---------------------------------------------------------------------------
+# protection sync -- unprotecting excluded repos
+#
+# A repo added to branch-protection-exclude.yaml after already being
+# protected (e.g. before the config existed) must have that protection
+# actively removed -- excluding a repo from the "apply" list alone leaves
+# whatever protection it already has in place forever, since nothing else
+# ever calls the API to remove it.
+# ---------------------------------------------------------------------------
+
+
+def _branch_unprotect_worker(monkeypatch, *, dry_run, status_code, track_calls=False):
+    response = _FakeResponse(status_code)
+    calls = [] if track_calls else None
+
+    async def fake_api_raw(method, *a, **k):
+        if calls is not None:
+            calls.append(method)
+        return response
+
+    monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
+    worker = repo_admin.make_branch_unprotect_worker(owner="hugoh", dry_run=dry_run)
+    return (worker, calls) if track_calls else worker
+
+
+async def test_branch_unprotect_worker_removes_existing_protection(monkeypatch):
+    worker, calls = _branch_unprotect_worker(
+        monkeypatch, dry_run=False, status_code=200, track_calls=True
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert result.tag == repo_admin.Tag.UNPROTECTED
+    assert "removed branch protection" in result.line
+    assert calls == ["GET", "DELETE"]
+
+
+async def test_branch_unprotect_worker_dry_run_does_not_delete(monkeypatch):
+    worker, calls = _branch_unprotect_worker(
+        monkeypatch, dry_run=True, status_code=200, track_calls=True
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert "would remove branch protection" in result.line
+    assert calls == ["GET"]
+
+
+async def test_branch_unprotect_worker_already_unprotected_is_unchanged(monkeypatch):
+    worker, calls = _branch_unprotect_worker(
+        monkeypatch, dry_run=False, status_code=404, track_calls=True
+    )
+    result = await worker(REPO)
+    assert result.status == Status.UNCHANGED
+    assert result.tag is None
+    assert calls == ["GET"]
+
+
+async def test_cmd_protection_sync_unprotects_excluded_repos_and_reports_them(
+    monkeypatch, capsys
+):
+    async def fake_list_repos(owner, *, only=None, skip=None, require_only_match=False):
+        return [REPO] if only == {"homebrew-tap"} else []
+
+    call_count = 0
+
+    async def fake_run_parallel(
+        repos, worker, *, verbose=False, jobs=None, dry_run=False
+    ):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return []
+        result = await worker(REPO)
+        return [result]
+
+    monkeypatch.setattr(repo_admin, "list_repos", fake_list_repos)
+    monkeypatch.setattr(repo_admin, "run_parallel", fake_run_parallel)
+    monkeypatch.setattr(
+        repo_admin, "default_branch_protection_exclude", lambda: {"homebrew-tap"}
+    )
+
+    async def fake_api_raw(method, *a, **k):
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
+    args = argparse.Namespace(repos=[], skip=None, dry_run=False, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    out = capsys.readouterr().out
+    assert "Removed branch protection (branch-protection-exclude.yaml): repo" in out
 
 
 # ---------------------------------------------------------------------------
