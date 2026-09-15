@@ -114,6 +114,7 @@ class Tag(enum.StrEnum):
     RULESET_NO_CHECKS_RULE = "ruleset_no_checks_rule"
     SKIPPED_NO_PLAN = "skipped_no_plan"
     UNAVAILABLE = "unavailable"
+    UNPROTECTED = "unprotected"
 
 
 async def list_repos_for_args(
@@ -1573,20 +1574,97 @@ def make_branch_protection_worker(
     return worker
 
 
+def make_branch_unprotect_worker(owner: str, dry_run: bool):
+    """Removes classic branch protection from a repo listed in
+    branch-protection-exclude.yaml. Being excluded only keeps `protection
+    sync` from applying protection going forward -- a repo protected before
+    it was added to the exclude file (or added there by mistake and fixed)
+    would otherwise stay protected forever, since nothing else ever calls
+    the API to remove it.
+
+    # ponytail: classic protection only, no ruleset teardown -- excluded
+    # repos are meant to have no CI/PR workflow and haven't needed one;
+    # add ruleset removal if one of them ever gets one.
+    """
+
+    async def worker(repo: Repo) -> RepoResult:
+        response = await api_raw(
+            "GET",
+            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
+        )
+        if response.status_code == 404:
+            return RepoResult(
+                repo,
+                result_line(
+                    repo.name, "already unprotected (excluded)", Status.UNCHANGED
+                ),
+                Status.UNCHANGED,
+            )
+        if not response.is_success:
+            raise GhError(error_message(response), status_code=response.status_code)
+
+        if dry_run:
+            detail = "would remove branch protection (excluded)"
+            return RepoResult(
+                repo, result_line(repo.name, detail, Status.OK), Status.OK
+            )
+
+        delete_response = await api_raw(
+            "DELETE",
+            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
+        )
+        if not delete_response.is_success:
+            raise GhError(
+                error_message(delete_response), status_code=delete_response.status_code
+            )
+
+        detail = "removed branch protection (excluded)"
+        return RepoResult(
+            repo,
+            result_line(repo.name, detail, Status.OK),
+            Status.OK,
+            tag=Tag.UNPROTECTED,
+        )
+
+    return worker
+
+
 async def cmd_protection_sync(args: argparse.Namespace) -> int:
-    repos = await list_repos_for_args(
-        args, extra_skip=default_branch_protection_exclude()
-    )
+    owner = await default_owner()
+    exclude = default_branch_protection_exclude()
+    repos = await list_repos_for_args(args, extra_skip=exclude)
     results = await run_parallel(
         repos,
         make_branch_protection_worker(
-            await default_owner(),
+            owner,
             args.dry_run,
             clear_stale_checks=getattr(args, "clear_stale_checks", False),
             adopt_renamed_checks=getattr(args, "adopt_renamed_checks", False),
         ),
         verbose=args.verbose,
         dry_run=args.dry_run,
+    )
+
+    # Being excluded only keeps the apply loop above from touching a repo --
+    # it says nothing about protection already in place, which must be
+    # actively removed or it lingers forever. Only within the requested
+    # scope (explicit repo args, minus an explicit --skip) so a scoped run
+    # doesn't reach outside what was asked for.
+    only = set(args.repos) or None
+    unprotect_names = exclude - (as_set(args.skip) or set())
+    if only is not None:
+        unprotect_names &= only
+    unprotect_results = []
+    if unprotect_names:
+        excluded_repos = await list_repos(owner, only=unprotect_names)
+        unprotect_results = await run_parallel(
+            excluded_repos,
+            make_branch_unprotect_worker(owner, args.dry_run),
+            verbose=args.verbose,
+            dry_run=args.dry_run,
+        )
+    unprotected = sorted(
+        r.repo.name for r in unprotect_results if r.tag == Tag.UNPROTECTED
     )
 
     rename_candidates = sorted(
@@ -1631,6 +1709,10 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
     print(
         "  Skipped (plan doesn't allow branch protection on private repos): "
         f"{' '.join(skipped_no_plan) or 'none'}"
+    )
+    print(
+        "  Removed branch protection (branch-protection-exclude.yaml): "
+        f"{' '.join(unprotected) or 'none'}"
     )
     if rename_candidates:
         print(
