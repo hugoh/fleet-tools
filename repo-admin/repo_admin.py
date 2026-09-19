@@ -887,7 +887,7 @@ async def _check_run_contexts(
         if run["conclusion"] == "skipped" and " / " not in run["name"]
     }
     if not suspect:
-        return sorted(_collapse_matrix_legs(contexts))
+        return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
 
     for sha in shas[1:]:
         if not suspect:
@@ -901,7 +901,7 @@ async def _check_run_contexts(
                 contexts.add(run["name"])
                 suspect.discard(base)
 
-    return sorted(_collapse_matrix_legs(contexts))
+    return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
 
 
 _MATRIX_LEG = re.compile(r"^(?P<prefix>.*?(?: / )?)(?P<job>[^/]+) \(.+\)$")
@@ -922,6 +922,21 @@ def _collapse_matrix_legs(contexts: set[str]) -> set[str]:
             continue
         kept.add(name)
     return kept
+
+
+def _drop_shadowed_by_wrapper_gate(contexts: set[str]) -> set[str]:
+    """Drop "<job> / ..." checks when a top-level "<job>-gate" wrapper exists.
+
+    A path-filtered caller job `jj` posts its reusable workflow's checks
+    ("jj / gate") only when it actually runs; requiring them strands every PR
+    that skips it. The always-running `jj-gate` wrapper is the stable stand-in.
+    """
+    wrappers = {
+        name.removesuffix("-gate") + " / "
+        for name in contexts
+        if name.endswith("-gate")
+    }
+    return {name for name in contexts if not name.startswith(tuple(wrappers))}
 
 
 def _gate_sibling(prefix: str, job: str) -> set[str]:
