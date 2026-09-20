@@ -24,6 +24,9 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
                                  and homepage URL, from the mapping in
                                  config/pages-domains.yaml; --enable also
                                  turns Pages on where it's missing
+  pages    disable REPO...      delete the GitHub Pages site of repos no
+                                 longer in config/pages-domains.yaml
+  pages    unset-url REPO...    clear the homepage URL of such repos
   pages    config --domain D    print config/pages-domains.yaml entries to
                                  stdout for a base domain, for the given
                                  repos or, if none given, repos `pages
@@ -1963,6 +1966,104 @@ async def cmd_pages_sync(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# pages disable / unset-url
+#
+# The teardown counterparts to pages sync, for a repo that has been dropped
+# from pages-domains.yaml. Both require explicit repo names and refuse repos
+# still in the mapping, since pages sync would just put them back.
+# ---------------------------------------------------------------------------
+
+
+def make_pages_disable_worker(owner: str, dry_run: bool):
+    async def worker(repo: Repo) -> RepoResult:
+        async def apply_result(current: dict | None) -> RepoResult:
+            if current is not None:
+                await api_json("DELETE", f"/repos/{owner}/{repo.name}/pages")
+            return _pages_disable_result(repo, current)
+
+        return await run_reconcile(
+            dry_run=dry_run,
+            fetch=lambda: _fetch_pages_config(owner, repo.name),
+            plan_result=lambda current: _pages_disable_result(
+                repo, current, planned=True
+            ),
+            apply_result=apply_result,
+        )
+
+    return worker
+
+
+def _pages_disable_result(
+    repo: Repo, current: dict | None, planned: bool = False
+) -> RepoResult:
+    if current is None:
+        return RepoResult(
+            repo,
+            result_line(repo.name, "Pages already disabled", Status.UNCHANGED),
+            Status.UNCHANGED,
+        )
+    verb = "would disable" if planned else "disabled"
+    detail = f"{verb} Pages (cname={current.get('cname')})"
+    return RepoResult(repo, result_line(repo.name, detail, Status.OK), Status.OK)
+
+
+def make_pages_unset_url_worker(owner: str, dry_run: bool):
+    async def worker(repo: Repo) -> RepoResult:
+        if not repo.homepage:
+            return RepoResult(
+                repo,
+                result_line(repo.name, "no homepage set", Status.UNCHANGED),
+                Status.UNCHANGED,
+            )
+        if dry_run:
+            detail = f"would clear homepage {repo.homepage}"
+        else:
+            await api_json(
+                "PATCH", f"/repos/{owner}/{repo.name}", json={"homepage": ""}
+            )
+            detail = f"cleared homepage {repo.homepage}"
+        return RepoResult(repo, result_line(repo.name, detail, Status.OK), Status.OK)
+
+    return worker
+
+
+async def _pages_teardown_repos(args: argparse.Namespace) -> list[Repo] | None:
+    if not args.repos:
+        print("error: name at least one repo", file=sys.stderr)
+        return None
+    mapped = set(args.repos) & set(lib.default_pages_domains())
+    if mapped:
+        print(
+            "error: still in config/pages-domains.yaml, remove it there first: "
+            f"{', '.join(sorted(mapped))}",
+            file=sys.stderr,
+        )
+        return None
+    return await list_repos_for_args(args)
+
+
+async def _run_pages_teardown(args: argparse.Namespace, make_worker) -> int:
+    repos = await _pages_teardown_repos(args)
+    if repos is None:
+        return 1
+    await run_parallel(
+        repos,
+        make_worker(await default_owner(), args.dry_run),
+        verbose=args.verbose,
+        dry_run=args.dry_run,
+    )
+    return 0
+
+
+async def cmd_pages_disable(args: argparse.Namespace) -> int:
+    return await _run_pages_teardown(args, make_pages_disable_worker)
+
+
+async def cmd_pages_unset_url(args: argparse.Namespace) -> int:
+    return await _run_pages_teardown(args, make_pages_unset_url_worker)
+
+
+# ---------------------------------------------------------------------------
 # pages status
 #
 # Read-only survey of which repos have GitHub Pages enabled and what custom
@@ -2619,6 +2720,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pages_sync.set_defaults(func=cmd_pages_sync)
+    pages.add_parser("disable", parents=[mutating]).set_defaults(func=cmd_pages_disable)
+    pages.add_parser("unset-url", parents=[mutating]).set_defaults(
+        func=cmd_pages_unset_url
+    )
     pages_config_parser = pages.add_parser("config", parents=[repo_scope])
     pages_config_parser.add_argument(
         "--domain", required=True, help="base domain, e.g. larve.net"

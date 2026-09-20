@@ -2524,6 +2524,90 @@ def test_pages_sync_enable_flag_is_parsed():
     assert args.enable is True
 
 
+async def test_pages_disable_worker_dry_run_and_apply(monkeypatch):
+    calls = []
+
+    async def fake_fetch(owner, name):
+        return {"cname": DOMAIN}
+
+    async def fake_api_json(method, path, json=None):
+        calls.append((method, path))
+        return {}
+
+    monkeypatch.setattr(repo_admin, "_fetch_pages_config", fake_fetch)
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+
+    dry = repo_admin.make_pages_disable_worker("hugoh", dry_run=True)
+    result = await dry(PAGES_REPO)
+    assert result.status == Status.OK
+    assert "would disable Pages" in result.line
+    assert calls == []
+
+    real = repo_admin.make_pages_disable_worker("hugoh", dry_run=False)
+    result = await real(PAGES_REPO)
+    assert result.status == Status.OK
+    assert calls == [("DELETE", "/repos/hugoh/repo/pages")]
+
+
+async def test_pages_disable_worker_unchanged_when_already_disabled(monkeypatch):
+    async def fake_fetch(owner, name):
+        return None
+
+    async def fake_api_json(*a, **k):
+        raise AssertionError("should not call the API")
+
+    monkeypatch.setattr(repo_admin, "_fetch_pages_config", fake_fetch)
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    worker = repo_admin.make_pages_disable_worker("hugoh", dry_run=False)
+    assert (await worker(PAGES_REPO)).status == Status.UNCHANGED
+
+
+async def test_pages_unset_url_worker(monkeypatch):
+    calls = []
+
+    async def fake_api_json(method, path, json=None):
+        calls.append((method, path, json))
+        return {}
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+
+    dry = repo_admin.make_pages_unset_url_worker("hugoh", dry_run=True)
+    result = await dry(PAGES_REPO)
+    assert result.status == Status.OK
+    assert f"would clear homepage {PAGES_REPO.homepage}" in result.line
+    assert calls == []
+
+    real = repo_admin.make_pages_unset_url_worker("hugoh", dry_run=False)
+    assert (await real(PAGES_REPO)).status == Status.OK
+    assert calls == [("PATCH", "/repos/hugoh/repo", {"homepage": ""})]
+
+    no_url = Repo(name="repo", default_branch="main", is_private=False, is_fork=False)
+    assert (await real(no_url)).status == Status.UNCHANGED
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cmd", ["cmd_pages_disable", "cmd_pages_unset_url"])
+async def test_pages_teardown_commands_require_unmapped_repos(monkeypatch, capsys, cmd):
+    monkeypatch.setattr(
+        repo_admin.lib, "default_pages_domains", lambda: {"awesome-jj": DOMAIN}
+    )
+    fn = getattr(repo_admin, cmd)
+    for repos in ([], ["awesome-jj"]):
+        args = argparse.Namespace(dry_run=True, repos=repos, skip=None, verbose=False)
+        assert await fn(args) == 1
+    assert "awesome-jj" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("verb", "func"),
+    [("disable", "cmd_pages_disable"), ("unset-url", "cmd_pages_unset_url")],
+)
+def test_pages_teardown_subcommands_are_registered(verb, func):
+    args = repo_admin.build_parser().parse_args(["pages", verb, "r", "--dry-run"])
+    assert args.func == getattr(repo_admin, func)
+    assert args.repos == ["r"]
+
+
 async def test_cmd_pages_sync_defaults_to_mapped_repos(monkeypatch):
     monkeypatch.setattr(
         repo_admin.lib, "default_pages_domains", lambda: {"awesome-jj": DOMAIN}

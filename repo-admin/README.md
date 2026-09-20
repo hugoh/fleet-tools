@@ -122,6 +122,13 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   failed unless `--enable` is given, which turns Pages on (GitHub Actions
   build) first; the repo still needs a workflow that deploys the site. The
   meta `sync` never passes `--enable`.
+- **`pages disable REPO... [--dry-run]`** — deletes the GitHub Pages site
+  (and with it the custom domain) of the named repos. Repos must already be
+  removed from `config/pages-domains.yaml`, since `pages sync` would
+  otherwise reinstate them; naming a mapped repo is an error.
+- **`pages unset-url REPO... [--dry-run]`** — clears the named repos'
+  homepage URL, which `pages sync` had pointed at the custom domain. Same
+  unmapped-only rule as `pages disable`.
 - **`pages status`** — read-only: lists every repo with GitHub Pages enabled
   and its current custom domain/HTTPS state and homepage URL, flagging any
   that aren't yet in `config/pages-domains.yaml`.
