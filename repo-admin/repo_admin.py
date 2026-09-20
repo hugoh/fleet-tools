@@ -15,14 +15,15 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
   protection sync               apply a baseline branch-protection policy to
                                  each repo's default branch
   security sync                 enable free, native GitHub security features
-  sync                          run merge/protection/security sync, in that
-                                 order
+  sync                          run merge/protection/security/pages sync, in
+                                 that order
   pages    status               list repos with GitHub Pages enabled and
                                  their custom domain, flagging ones missing
                                  from config/pages-domains.yaml
-  pages    sync                 set each repo's GitHub Pages custom domain
+  pages    sync [--enable]      set each repo's GitHub Pages custom domain
                                  and homepage URL, from the mapping in
-                                 config/pages-domains.yaml
+                                 config/pages-domains.yaml; --enable also
+                                 turns Pages on where it's missing
   pages    config --domain D    print config/pages-domains.yaml entries to
                                  stdout for a base domain, for the given
                                  repos or, if none given, repos `pages
@@ -1755,7 +1756,14 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
 
 
 async def _pages_config(owner: str, name: str) -> dict:
-    return await api_json("GET", f"/repos/{owner}/{name}/pages")
+    config = await _fetch_pages_config(owner, name)
+    if config is None:
+        raise GhError(
+            f"Pages is not enabled on {owner}/{name} "
+            "(it is mapped in config/pages-domains.yaml)",
+            status_code=404,
+        )
+    return config
 
 
 def pages_domain_https_ready(pages_json: dict) -> bool:
@@ -1801,17 +1809,18 @@ def pages_domain_apply_line(
     domain: str,
     status: Status,
     homepage_changed: bool = False,
+    enabled: bool = False,
 ) -> str:
     cname_changed = before.get("cname") != after.get("cname")
     https_changed = before.get("https_enforced") != after.get("https_enforced")
-    if not cname_changed and not https_changed and not homepage_changed:
+    if not (cname_changed or https_changed or homepage_changed or enabled):
         detail = (
             f"cname={domain}, https enforced"
             if after.get("https_enforced")
             else f"cname={domain}; https cert pending"
         )
         return result_line(name, detail, status)
-    parts = []
+    parts = ["enabled Pages (workflow)"] if enabled else []
     if cname_changed:
         parts.append(f"cname -> {domain}")
     if https_changed:
@@ -1821,12 +1830,29 @@ def pages_domain_apply_line(
     return result_line(name, ", ".join(parts), status)
 
 
-def make_pages_domain_worker(owner: str, dry_run: bool, domains: dict[str, str]):
+def make_pages_domain_worker(
+    owner: str, dry_run: bool, domains: dict[str, str], enable: bool = False
+):
     async def worker(repo: Repo) -> RepoResult:
         domain = domains[repo.name]
         homepage_ok = repo.homepage == pages_homepage_url(domain)
 
-        def plan_result(current: dict) -> RepoResult:
+        async def fetch() -> dict | None:
+            try:
+                return await _pages_config(owner, repo.name)
+            except GhError as exc:
+                if enable and exc.status_code == 404:
+                    return None
+                raise
+
+        def plan_result(current: dict | None) -> RepoResult:
+            if current is None:
+                detail = f"would enable Pages (workflow), set cname -> {domain}"
+                return RepoResult(
+                    repo,
+                    result_line(repo.name, detail, Status.LIMITED),
+                    Status.LIMITED,
+                )
             would_change = (
                 current.get("cname") != domain
                 or not homepage_ok
@@ -1847,7 +1873,16 @@ def make_pages_domain_worker(owner: str, dry_run: bool, domains: dict[str, str])
                 status,
             )
 
-        async def apply_result(before: dict) -> RepoResult:
+        async def apply_result(before: dict | None) -> RepoResult:
+            enabled = before is None
+            if before is None:
+                await api_json(
+                    "POST",
+                    f"/repos/{owner}/{repo.name}/pages",
+                    json={"build_type": "workflow"},
+                )
+                before = await _pages_config(owner, repo.name)
+
             payload: dict = {}
             if before.get("cname") != domain:
                 payload["cname"] = domain
@@ -1872,7 +1907,7 @@ def make_pages_domain_worker(owner: str, dry_run: bool, domains: dict[str, str])
 
             status = classify_status(
                 at_target=pages_domain_up_to_date(after, domain),
-                changed=before != after or not homepage_ok,
+                changed=enabled or before != after or not homepage_ok,
             )
             return RepoResult(
                 repo,
@@ -1883,13 +1918,14 @@ def make_pages_domain_worker(owner: str, dry_run: bool, domains: dict[str, str])
                     domain,
                     status,
                     homepage_changed=not homepage_ok,
+                    enabled=enabled,
                 ),
                 status,
             )
 
         return await run_reconcile(
             dry_run=dry_run,
-            fetch=lambda: _pages_config(owner, repo.name),
+            fetch=fetch,
             plan_result=plan_result,
             apply_result=apply_result,
         )
@@ -1914,7 +1950,12 @@ async def cmd_pages_sync(args: argparse.Namespace) -> int:
     repos = await list_repos(await default_owner(), only=only, skip=as_set(args.skip))
     await run_parallel(
         repos,
-        make_pages_domain_worker(await default_owner(), args.dry_run, domains),
+        make_pages_domain_worker(
+            await default_owner(),
+            args.dry_run,
+            domains,
+            enable=getattr(args, "enable", False),
+        ),
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
@@ -2453,9 +2494,10 @@ async def cmd_config_bootstrap(args: argparse.Namespace) -> int:
 
 
 async def cmd_sync(args: argparse.Namespace) -> int:
-    """Runs merge, protection, then security sync in that order (matching
-    the README's ordering -- merge sync's PR-branch auto-update makes
-    protection sync's auto-merge-friendly baseline behave as intended). One
+    """Runs merge, protection, security, then pages sync in that order
+    (matching the README's ordering -- merge sync's PR-branch auto-update
+    makes protection sync's auto-merge-friendly baseline behave as
+    intended). One
     command failing doesn't stop the others; the exit code is nonzero if
     any of them failed.
     """
@@ -2464,6 +2506,7 @@ async def cmd_sync(args: argparse.Namespace) -> int:
         ("merge sync", cmd_merge_sync),
         ("protection sync", cmd_protection_sync),
         ("security sync", cmd_security_sync),
+        ("pages sync", _cmd_pages_sync_mapped_only),
     ):
         print(f"== {name} ==")
         try:
@@ -2473,6 +2516,19 @@ async def cmd_sync(args: argparse.Namespace) -> int:
             print(exc, file=sys.stderr)
             failed = True
     return 1 if failed else 0
+
+
+async def _cmd_pages_sync_mapped_only(args: argparse.Namespace) -> int:
+    """pages sync for the meta `sync`: repos named on the command line but
+    absent from pages-domains.yaml are dropped rather than rejected, since
+    they were named for the other syncs.
+    """
+    if not args.repos:
+        return await cmd_pages_sync(args)
+    mapped = [r for r in args.repos if r in lib.default_pages_domains()]
+    if not mapped:
+        return 0
+    return await cmd_pages_sync(argparse.Namespace(**{**vars(args), "repos": mapped}))
 
 
 # ---------------------------------------------------------------------------
@@ -2553,7 +2609,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     pages = resource_verbs("pages")
     pages.add_parser("status", parents=[repo_scope]).set_defaults(func=cmd_pages_status)
-    pages.add_parser("sync", parents=[mutating]).set_defaults(func=cmd_pages_sync)
+    pages_sync = pages.add_parser("sync", parents=[mutating])
+    pages_sync.add_argument(
+        "--enable",
+        action="store_true",
+        help=(
+            "enable GitHub Pages (GitHub Actions build) on mapped repos that "
+            "don't have it yet (default: report them as failed)"
+        ),
+    )
+    pages_sync.set_defaults(func=cmd_pages_sync)
     pages_config_parser = pages.add_parser("config", parents=[repo_scope])
     pages_config_parser.add_argument(
         "--domain", required=True, help="base domain, e.g. larve.net"

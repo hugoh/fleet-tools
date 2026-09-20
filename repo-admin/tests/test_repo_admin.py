@@ -1,6 +1,8 @@
 import argparse
 import base64
 
+import httpx
+import pytest
 import repo_admin
 from lib import GhError, Repo, Status
 
@@ -2091,7 +2093,7 @@ async def test_plan_gated_worker_manual_attention_when_plain_branch_ruleset_exis
 # ---------------------------------------------------------------------------
 
 
-async def test_cmd_sync_runs_merge_protection_security_in_order(
+async def test_cmd_sync_runs_merge_protection_security_pages_in_order(
     monkeypatch,
 ):
     calls = []
@@ -2108,12 +2110,22 @@ async def test_cmd_sync_runs_merge_protection_security_in_order(
         calls.append("security-features")
         return 0
 
+    async def fake_pages(args):
+        calls.append("pages")
+        return 0
+
+    monkeypatch.setattr(repo_admin, "cmd_pages_sync", fake_pages)
     monkeypatch.setattr(repo_admin, "cmd_merge_sync", fake_merge_settings)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_branch_protection)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_security_features)
     args = argparse.Namespace(dry_run=True, repos=[], skip=None, verbose=False)
     assert await repo_admin.cmd_sync(args) == 0
-    assert calls == ["merge-settings", "branch-protection", "security-features"]
+    assert calls == [
+        "merge-settings",
+        "branch-protection",
+        "security-features",
+        "pages",
+    ]
 
 
 async def test_cmd_sync_continues_after_a_command_fails_and_returns_nonzero(
@@ -2153,6 +2165,35 @@ async def test_cmd_sync_returns_nonzero_when_a_command_returns_nonzero(monkeypat
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
     args = argparse.Namespace(dry_run=True, repos=[], skip=None, verbose=False)
     assert await repo_admin.cmd_sync(args) == 1
+
+
+async def test_cmd_sync_runs_pages_sync_last_for_mapped_repos_only(monkeypatch):
+    seen = []
+
+    async def fake_zero(args):
+        return 0
+
+    async def fake_pages(args):
+        seen.append(args.repos)
+        return 0
+
+    monkeypatch.setattr(repo_admin, "cmd_merge_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "cmd_pages_sync", fake_pages)
+    monkeypatch.setattr(
+        repo_admin.lib, "default_pages_domains", lambda: {"awesome-jj": DOMAIN}
+    )
+    args = argparse.Namespace(
+        dry_run=True, repos=["awesome-jj", "other"], skip=None, verbose=False
+    )
+    assert await repo_admin.cmd_sync(args) == 0
+    assert seen == [["awesome-jj"]]
+
+    seen.clear()
+    args = argparse.Namespace(dry_run=True, repos=["other"], skip=None, verbose=False)
+    assert await repo_admin.cmd_sync(args) == 0
+    assert seen == []
 
 
 def test_sync_subcommand_is_registered_in_parser():
@@ -2404,6 +2445,83 @@ async def test_pages_domain_worker_apply_unchanged_when_already_at_target(monkey
     )
     result = await worker(PAGES_REPO)
     assert result.status == Status.UNCHANGED
+
+
+async def test_pages_config_explains_404_as_pages_not_enabled(monkeypatch):
+    async def fake_api_raw(method, path, **kwargs):
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
+    with pytest.raises(GhError, match="Pages is not enabled on hugoh/repo"):
+        await repo_admin._pages_config("hugoh", "repo")
+
+
+def _not_enabled_pages_config(monkeypatch):
+    async def fake_pages_config(owner, name):
+        raise GhError("not enabled", status_code=404)
+
+    monkeypatch.setattr(repo_admin, "_pages_config", fake_pages_config)
+
+
+async def test_pages_domain_worker_without_enable_fails_when_pages_missing(
+    monkeypatch,
+):
+    _not_enabled_pages_config(monkeypatch)
+    worker = repo_admin.make_pages_domain_worker(
+        owner="hugoh", dry_run=True, domains={"repo": DOMAIN}
+    )
+    with pytest.raises(GhError):
+        await worker(PAGES_REPO)
+
+
+async def test_pages_domain_worker_enable_dry_run_reports_would_enable(monkeypatch):
+    _not_enabled_pages_config(monkeypatch)
+    worker = repo_admin.make_pages_domain_worker(
+        owner="hugoh", dry_run=True, domains={"repo": DOMAIN}, enable=True
+    )
+    result = await worker(PAGES_REPO)
+    assert result.status == Status.LIMITED
+    assert f"would enable Pages (workflow), set cname -> {DOMAIN}" in result.line
+
+
+async def test_pages_domain_worker_enable_creates_site_then_sets_cname(monkeypatch):
+    configs = iter(
+        [
+            GhError("not enabled", status_code=404),
+            {"cname": None, "https_enforced": False},
+            {"cname": DOMAIN, "https_enforced": False},
+        ]
+    )
+    calls = []
+
+    async def fake_pages_config(owner, name):
+        value = next(configs)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    async def fake_api_json(method, path, json=None):
+        calls.append((method, path, json))
+        return {}
+
+    monkeypatch.setattr(repo_admin, "_pages_config", fake_pages_config)
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    worker = repo_admin.make_pages_domain_worker(
+        owner="hugoh", dry_run=False, domains={"repo": DOMAIN}, enable=True
+    )
+    result = await worker(PAGES_REPO)
+    pages_path = "/repos/hugoh/repo/pages"
+    assert calls[:2] == [
+        ("POST", pages_path, {"build_type": "workflow"}),
+        ("PUT", pages_path, {"cname": DOMAIN}),
+    ]
+    assert result.status == Status.LIMITED
+    assert "enabled Pages (workflow), cname ->" in result.line
+
+
+def test_pages_sync_enable_flag_is_parsed():
+    args = repo_admin.build_parser().parse_args(["pages", "sync", "--enable"])
+    assert args.enable is True
 
 
 async def test_cmd_pages_sync_defaults_to_mapped_repos(monkeypatch):
