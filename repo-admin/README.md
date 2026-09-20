@@ -105,10 +105,10 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   private repos need GitHub Advanced Security, a paid add-on this
   account's plan doesn't include; such repos are reported as unavailable,
   not failed, as are repos with no CodeQL-supported language).
-- **`sync [--dry-run]`** — runs `merge sync`, `protection sync`, then
-  `security sync` in sequence. One command failing doesn't stop the
-  others; the exit code is nonzero if any of them failed.
-- **`pages sync [--dry-run]`** — sets each repo's GitHub Pages custom
+- **`sync [--dry-run]`** — runs `merge sync`, `protection sync`,
+  `security sync`, then `pages sync` in sequence. One command failing
+  doesn't stop the others; the exit code is nonzero if any of them failed.
+- **`pages sync [--dry-run] [--enable]`** — sets each repo's GitHub Pages custom
   domain from the repo → domain mapping in `config/pages-domains.yaml` (the
   same file the OpenTofu DNS config reads to generate the matching
   records), and points the repo's homepage URL at
@@ -118,7 +118,10 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   error if given a repo not in the mapping. `https_enforced` is only ever
   turned on, and only once GitHub reports the domain's certificate as
   issued; a freshly-set domain needs a later rerun to pick that up once
-  DNS/cert issuance catches up.
+  DNS/cert issuance catches up. A mapped repo without Pages is reported as
+  failed unless `--enable` is given, which turns Pages on (GitHub Actions
+  build) first; the repo still needs a workflow that deploys the site. The
+  meta `sync` never passes `--enable`.
 - **`pages status`** — read-only: lists every repo with GitHub Pages enabled
   and its current custom domain/HTTPS state and homepage URL, flagging any
   that aren't yet in `config/pages-domains.yaml`.
