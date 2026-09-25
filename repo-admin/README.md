@@ -5,7 +5,7 @@ repos, via the GitHub REST API (authenticated through `gh auth token`, so it
 reuses `gh`'s existing login rather than managing a separate credential). A
 single Python CLI (`repo_admin.py`, run through `uv`) with `<resource> <verb>`
 subcommands, `gh`/`aws`/`docker`-style; repos are processed in parallel
-(`GH_JOBS`, default 6). Config data (the `config/*.yaml` files referenced
+(`GH_JOBS`, default 12). Config data (the `config/*.yaml` files referenced
 below) lives under `repo-admin/config/` by default; set `REPO_ADMIN_CONFIG_DIR`
 to keep it in a separate repo, checked out and run through a wrapper that
 exports that variable. The stateless fetch-diff-apply reconcile loop each
