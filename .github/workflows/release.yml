@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - id: bump
-        uses: hugoh/cog-bump@0a5b6eb1c0c7eb8cf876a0ffaa06d27cb92f63db # v0.2.0
+        uses: hugoh/cog-bump@ac73ff77235d0567cfce5f004243e980521728c2 # v0.3.2
         with:
           config: cog.toml
 
