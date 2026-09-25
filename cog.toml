@@ -12,7 +12,7 @@ monorepo_version_separator = "-v"
 [commit_types]
 perf = { changelog_title = "Performance", bump_patch = true }
 
-[packages]
+[monorepo.packages]
 asyncgh = { path = "asyncgh" }
 reconcilekit = { path = "reconcilekit" }
 repokit = { path = "repokit" }
