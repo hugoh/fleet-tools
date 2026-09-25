@@ -27,20 +27,34 @@ jobs:
           fetch-depth: 0
 
       - id: bump
-        uses: hugoh/cog-bump@63606a95450f974ba9b6c742712618bf2e747f09 # v0.3.3
+        uses: hugoh/cog-bump@934fdc8c1346ff5b3efe52ed63e14c1a4b3825e3 # v0.3.4
         with:
           config: cog.toml
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: steps.bump.outputs.tags != ''
+        with:
+          enable-cache: false
+
+      # GitHub's --generate-notes lists every PR since the last release of any
+      # package; git-cliff keeps only commits that touched this package.
       - name: Create GitHub releases
         if: steps.bump.outputs.tags != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAGS: ${{ steps.bump.outputs.tags }}
+          # renovate: datasource=pypi depName=git-cliff
+          GIT_CLIFF_VERSION: 2.14.2
         run: |
           set -euo pipefail
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
-            gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+            pkg="${tag%-v*}"
+            from=$(git describe --tags --abbrev=0 --match "${pkg}-v*" "${tag}^" 2>/dev/null \
+              || git rev-list --max-parents=0 "$tag" | tail -n 1)
+            uvx "git-cliff@${GIT_CLIFF_VERSION}" --include-path "${pkg}/**" --tag-pattern "^${pkg}-v" \
+              --strip all --tag "$tag" "${from}..${tag}" > "$RUNNER_TEMP/notes.md"
+            gh release create "$tag" --verify-tag --title "$tag" --notes-file "$RUNNER_TEMP/notes.md"
           done <<< "$TAGS"
 
       - name: Dispatch package publish workflows
