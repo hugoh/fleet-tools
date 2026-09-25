@@ -19,7 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
+    outputs:
+      releases: ${{ steps.releases.outputs.releases }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,15 +58,47 @@ jobs:
             gh release create "$tag" --verify-tag --title "$tag" --notes-file "$RUNNER_TEMP/notes.md"
           done <<< "$TAGS"
 
-      - name: Dispatch package publish workflows
-        if: steps.bump.outputs.tags != ''
+      - id: releases
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAGS: ${{ steps.bump.outputs.tags }}
         run: |
           set -euo pipefail
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            pkg="${tag%-v*}"
-            gh workflow run "release-${pkg}.yml" --ref main -f ref="$tag"
-          done <<< "$TAGS"
+          releases=$(jq -Rnc '[inputs | select(length > 0) | {tag: ., pkg: (split("-v") | .[:-1] | join("-v"))}]' <<< "$TAGS")
+          echo "releases=$releases" >> "$GITHUB_OUTPUT"
+
+  # Trusted publishing doesn't work from a reusable workflow
+  # (pypi/warehouse#11096), so publishing stays in this top-level workflow.
+  # Recover a failed publish with "Re-run failed jobs" on the run.
+  publish:
+    needs: release
+    if: needs.release.outputs.releases != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.release.outputs.releases) }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    environment: pypi-${{ matrix.pkg }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Build package
+        env:
+          PKG: ${{ matrix.pkg }}
+        run: uv build "$PKG" --out-dir dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          skip-existing: true
