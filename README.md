@@ -49,8 +49,9 @@ See [`repo-admin/README.md`](repo-admin/README.md) for the full command set and
   whose files changed since its last tag gets a new `<pkg>-vX.Y.Z` tag from its
   Conventional Commits, plus a GitHub release. The version lives only in the
   tag — `hatch-vcs` derives it at build time — so nothing lands back on `main`.
-  Each tag fires that package's `release-<pkg>.yml`, which builds and publishes
-  to PyPI via trusted publishing.
+  The same `release.yml` run then builds each tagged package and publishes it to
+  PyPI via trusted publishing (environment `pypi-<pkg>`). If a publish fails,
+  use "Re-run failed jobs" on that run.
 - Breaking changes on a `0.x` package bump the minor, not `1.0.0`; reach
   `1.0.0` deliberately with `cog bump --package <pkg> --version 1.0.0`, then
   push the tag.
