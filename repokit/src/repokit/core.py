@@ -24,7 +24,7 @@ from asyncgh import GhError, aclose_client, fetch_repos
 from reconcilekit import Status
 from reconcilekit import run_parallel as _run_parallel
 
-DEFAULT_JOBS = int(os.environ.get("GH_JOBS", "6"))
+DEFAULT_JOBS = int(os.environ.get("GH_JOBS", "12"))
 
 _Args = TypeVar("_Args")
 
@@ -131,4 +131,4 @@ def run_cli(
 # reconcilekit.run_parallel with GhError bound as the failure exception type.
 # See reconcilekit.kernel for the concurrency, failure-isolation, and
 # quiet-suppression behaviour.
-run_parallel = functools.partial(_run_parallel, error_cls=GhError)
+run_parallel = functools.partial(_run_parallel, error_cls=GhError, jobs=DEFAULT_JOBS)

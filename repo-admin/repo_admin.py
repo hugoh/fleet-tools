@@ -54,7 +54,7 @@ Every `<resource> <verb>` accepts trailing repo names to scope to a subset
 excluded by default -- except those listed in config/forks-include.yaml; edit
 that file to add more, or override per-run with GH_INCLUDE_FORKS
 (comma-separated). GH_OWNER overrides the default owner (the authenticated
-account); GH_JOBS controls parallelism (default 6). Run a mutating command
+account); GH_JOBS controls parallelism (default 12). Run a mutating command
 with --dry-run
 first and review the output; `--verbose` shows every repo, not just the
 ones that changed.

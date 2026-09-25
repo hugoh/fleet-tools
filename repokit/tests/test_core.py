@@ -146,3 +146,9 @@ def _record_close(sink):
         sink.append(True)
 
     return _aclose
+
+
+def test_run_parallel_uses_gh_jobs_concurrency():
+    import repokit
+
+    assert repokit.run_parallel.keywords["jobs"] == repokit.DEFAULT_JOBS
