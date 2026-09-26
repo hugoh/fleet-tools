@@ -23,6 +23,9 @@ RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 RETRY_WAIT_INITIAL = 1.0
 RETRY_WAIT_MAX = 60.0
 RETRY_WAIT_JITTER = 1.0
+# GitHub: on a secondary rate limit with no Retry-After, wait at least a
+# minute -- the default backoff (seconds) just retries inside the penalty.
+SECONDARY_RATE_LIMIT_WAIT = 60.0
 
 
 class GhError(RuntimeError):
@@ -75,9 +78,23 @@ def _default_max_retries() -> int:
         raise GhError(f"GH_MAX_RETRIES must be an integer, got {raw!r}") from exc
 
 
+def _is_secondary_rate_limit(response: httpx2.Response) -> bool:
+    """GitHub signals a secondary rate limit with a 403 or 429 whose body
+    says so -- a 403 is otherwise a real permission error, not transient.
+    """
+    return response.status_code in (403, 429) and (
+        "secondary rate limit" in response.text.lower()
+    )
+
+
+def _is_retryable(response: httpx2.Response) -> bool:
+    return response.status_code in RETRY_STATUSES or _is_secondary_rate_limit(response)
+
+
 def _should_retry(exc: Exception) -> bool | float:
     """stamina backoff hook. A `Retry-After` header (GitHub sends one on
-    secondary rate limits) sets the exact wait; otherwise transport errors
+    secondary rate limits) sets the exact wait; a secondary rate limit
+    without one waits SECONDARY_RATE_LIMIT_WAIT; otherwise transport errors
     and RETRY_STATUSES responses retry on stamina's default backoff, and
     everything else propagates.
     """
@@ -89,6 +106,8 @@ def _should_retry(exc: Exception) -> bool | float:
                 return float(header)
             except ValueError:
                 pass
+        if _is_secondary_rate_limit(response):
+            return SECONDARY_RATE_LIMIT_WAIT
         return response.status_code in RETRY_STATUSES
     return isinstance(exc, httpx2.TransportError)
 
@@ -102,7 +121,7 @@ class _GraphQLRateLimited(Exception):
 
 def _should_retry_graphql(exc: Exception) -> bool | float:
     if isinstance(exc, _GraphQLRateLimited):
-        return True
+        return SECONDARY_RATE_LIMIT_WAIT
     return _should_retry(exc)
 
 
@@ -245,7 +264,7 @@ class GitHubClient:
                     response = await self._do_request(
                         method, path, json=json, params=params
                     )
-                    if response.status_code in RETRY_STATUSES:
+                    if _is_retryable(response):
                         response.raise_for_status()
                     return response
         except httpx2.HTTPStatusError as exc:
@@ -299,7 +318,7 @@ class GitHubClient:
                         "/graphql",
                         json={"query": query, "variables": variables or {}},
                     )
-                    if response.status_code in RETRY_STATUSES:
+                    if _is_retryable(response):
                         response.raise_for_status()
                     if not response.is_success:
                         raise GhError(
