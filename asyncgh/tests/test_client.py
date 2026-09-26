@@ -15,6 +15,7 @@ def _instant_backoff(monkeypatch):
     monkeypatch.setattr(client, "RETRY_WAIT_INITIAL", 0.0)
     monkeypatch.setattr(client, "RETRY_WAIT_MAX", 0.0)
     monkeypatch.setattr(client, "RETRY_WAIT_JITTER", 0.0)
+    monkeypatch.setattr(client, "SECONDARY_RATE_LIMIT_WAIT", 0.0)
 
 
 def _rate_limited_response(message="rate limited"):
@@ -136,6 +137,31 @@ async def test_api_raw_returns_last_response_when_retries_exhausted(
     assert route.call_count == client.DEFAULT_MAX_RETRIES + 1
 
 
+async def test_api_raw_retries_secondary_rate_limit_403(
+    httpx2_mock: respx.Router,
+):
+    route = httpx2_mock.get(f"{API_BASE}/x").mock(
+        side_effect=[
+            httpx.Response(403, json=_SECONDARY_LIMIT_BODY),
+            httpx.Response(200, json={}),
+        ]
+    )
+    response = await api_raw("GET", "/x")
+    assert response.status_code == 200
+    assert route.call_count == 2
+
+
+async def test_graphql_retries_secondary_rate_limit_403(httpx2_mock: respx.Router):
+    route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(403, json=_SECONDARY_LIMIT_BODY),
+            httpx.Response(200, json={"data": {"ok": True}}),
+        ]
+    )
+    assert await graphql("query { ok }") == {"ok": True}
+    assert route.call_count == 2
+
+
 async def test_api_raw_does_not_retry_non_retryable_status(
     httpx2_mock: respx.Router,
 ):
@@ -180,14 +206,40 @@ def test_default_max_retries_raises_gh_error_on_malformed_value(monkeypatch):
         client._default_max_retries()
 
 
-def _status_error(status: int, **headers: str) -> httpx2.HTTPStatusError:
+_SECONDARY_LIMIT_BODY = {
+    "message": "You have exceeded a secondary rate limit. Please wait a few minutes."
+}
+
+
+def _status_error(
+    status: int, *, body: dict | None = None, headers: dict | None = None
+) -> httpx2.HTTPStatusError:
     request = httpx2.Request("GET", f"{API_BASE}/x")
-    response = httpx2.Response(status, headers=headers, request=request)
+    response = httpx2.Response(status, headers=headers, json=body, request=request)
     return httpx2.HTTPStatusError(str(status), request=request, response=response)
 
 
 def test_should_retry_reads_retry_after_header_as_exact_wait():
-    assert _should_retry(_status_error(429, **{"Retry-After": "42"})) == 42.0
+    assert _should_retry(_status_error(429, headers={"Retry-After": "42"})) == 42.0
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_should_retry_waits_secondary_limit_floor_without_retry_after(
+    monkeypatch, status
+):
+    monkeypatch.setattr(client, "SECONDARY_RATE_LIMIT_WAIT", 60.0)
+    assert _should_retry(_status_error(status, body=_SECONDARY_LIMIT_BODY)) == 60.0
+
+
+def test_should_retry_graphql_waits_secondary_limit_floor_on_rate_limited(
+    monkeypatch,
+):
+    monkeypatch.setattr(client, "SECONDARY_RATE_LIMIT_WAIT", 60.0)
+    assert client._should_retry_graphql(client._GraphQLRateLimited("x")) == 60.0
+
+
+def test_should_retry_false_for_permission_403():
+    assert _should_retry(_status_error(403, body={"message": "Forbidden"})) is False
 
 
 def test_should_retry_true_for_5xx_without_retry_after():
