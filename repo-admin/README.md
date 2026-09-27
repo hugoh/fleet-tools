@@ -51,8 +51,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   merging; without auto-update, auto-merge PRs stall needing a manual
   "Update branch" click). Also sets the squash-merge subject to the PR
   title (`squash_merge_commit_title=PR_TITLE`) for repos where `semantic-pr`
-  is already a required status check — so it trails `protection sync` and
-  needs no opt-in list.
+  is already a required status check, so it needs no opt-in list.
 - **`protection sync [--dry-run] [--clear-stale-checks]
   [--adopt-renamed-checks]`** — requires status checks to pass and a
   PR (0 approvals needed, no direct pushes) before merging, matching the
@@ -106,7 +105,9 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   account's plan doesn't include; such repos are reported as unavailable,
   not failed, as are repos with no CodeQL-supported language).
 - **`sync [--dry-run]`** — runs `merge sync`, `protection sync`,
-  `security sync`, then `pages sync` in sequence. One command failing
+  `security sync`, then `pages sync` in sequence, with `merge sync`'s
+  squash-title step moved to just after `protection sync` so a repo that
+  newly gets `semantic-pr` required is fully set up in one run. One command failing
   doesn't stop the others; the exit code is nonzero if any of them failed.
 - **`pages sync [--dry-run] [--enable]`** — sets each repo's GitHub Pages custom
   domain from the repo → domain mapping in `config/pages-domains.yaml` (the

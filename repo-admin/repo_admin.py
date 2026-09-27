@@ -270,10 +270,9 @@ def make_merge_settings_worker(owner: str, dry_run: bool):
 # squash_merge_commit_title=PR_TITLE makes the PR title the squash subject
 # unconditionally -- worth doing only where that title is linted into
 # Conventional-Commit form, i.e. where the `semantic-pr` reusable workflow's
-# check already gates merges on the default branch. So this trails
-# `protection sync` per repo: the setting is picked up on the `merge sync`
-# run after `semantic-pr` becomes a required check, with no separate opt-in
-# list to maintain.
+# check already gates merges on the default branch. The meta `sync` runs
+# this after `protection sync`, so a repo gets it in the same run that makes
+# `semantic-pr` required, with no separate opt-in list to maintain.
 # ---------------------------------------------------------------------------
 
 SQUASH_MERGE_TARGET = {
@@ -398,22 +397,29 @@ def make_squash_title_worker(owner: str, dry_run: bool):
     return worker
 
 
-async def cmd_merge_sync(args: argparse.Namespace) -> int:
+async def _run_worker_sync(args: argparse.Namespace, make_worker) -> int:
     repos = await list_repos_for_args(args)
     owner = await default_owner()
     await run_parallel(
         repos,
-        make_merge_settings_worker(owner, args.dry_run),
-        verbose=args.verbose,
-        dry_run=args.dry_run,
-    )
-    await run_parallel(
-        repos,
-        make_squash_title_worker(owner, args.dry_run),
+        make_worker(owner, args.dry_run),
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
     return 0
+
+
+async def _merge_settings_sync(args: argparse.Namespace) -> int:
+    return await _run_worker_sync(args, make_merge_settings_worker)
+
+
+async def _squash_title_sync(args: argparse.Namespace) -> int:
+    return await _run_worker_sync(args, make_squash_title_worker)
+
+
+async def cmd_merge_sync(args: argparse.Namespace) -> int:
+    await _merge_settings_sync(args)
+    return await _squash_title_sync(args)
 
 
 # ---------------------------------------------------------------------------
@@ -2598,14 +2604,17 @@ async def cmd_sync(args: argparse.Namespace) -> int:
     """Runs merge, protection, security, then pages sync in that order
     (matching the README's ordering -- merge sync's PR-branch auto-update
     makes protection sync's auto-merge-friendly baseline behave as
-    intended). One
+    intended). merge sync's squash-title step is split out to run right
+    after protection sync, since it keys off the `semantic-pr` required
+    check that protection sync adds. One
     command failing doesn't stop the others; the exit code is nonzero if
     any of them failed.
     """
     failed = False
     for name, cmd in (
-        ("merge sync", cmd_merge_sync),
+        ("merge sync", _merge_settings_sync),
         ("protection sync", cmd_protection_sync),
+        ("squash title sync", _squash_title_sync),
         ("security sync", cmd_security_sync),
         ("pages sync", _cmd_pages_sync_mapped_only),
     ):

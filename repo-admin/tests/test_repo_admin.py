@@ -2093,36 +2093,29 @@ async def test_plan_gated_worker_manual_attention_when_plain_branch_ruleset_exis
 # ---------------------------------------------------------------------------
 
 
-async def test_cmd_sync_runs_merge_protection_security_pages_in_order(
-    monkeypatch,
-):
+async def test_cmd_sync_runs_squash_title_after_protection(monkeypatch):
     calls = []
 
-    async def fake_merge_settings(args):
-        calls.append("merge-settings")
-        return 0
+    def recorder(name):
+        async def fake(args):
+            calls.append(name)
+            return 0
 
-    async def fake_branch_protection(args):
-        calls.append("branch-protection")
-        return 0
+        return fake
 
-    async def fake_security_features(args):
-        calls.append("security-features")
-        return 0
-
-    async def fake_pages(args):
-        calls.append("pages")
-        return 0
-
-    monkeypatch.setattr(repo_admin, "cmd_pages_sync", fake_pages)
-    monkeypatch.setattr(repo_admin, "cmd_merge_sync", fake_merge_settings)
-    monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_branch_protection)
-    monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_security_features)
+    monkeypatch.setattr(repo_admin, "_merge_settings_sync", recorder("merge-settings"))
+    monkeypatch.setattr(
+        repo_admin, "cmd_protection_sync", recorder("branch-protection")
+    )
+    monkeypatch.setattr(repo_admin, "_squash_title_sync", recorder("squash-title"))
+    monkeypatch.setattr(repo_admin, "cmd_security_sync", recorder("security-features"))
+    monkeypatch.setattr(repo_admin, "cmd_pages_sync", recorder("pages"))
     args = argparse.Namespace(dry_run=True, repos=[], skip=None, verbose=False)
     assert await repo_admin.cmd_sync(args) == 0
     assert calls == [
         "merge-settings",
         "branch-protection",
+        "squash-title",
         "security-features",
         "pages",
     ]
@@ -2141,16 +2134,26 @@ async def test_cmd_sync_continues_after_a_command_fails_and_returns_nonzero(
         calls.append("branch-protection")
         return 0
 
+    async def fake_squash_title(args):
+        calls.append("squash-title")
+        return 0
+
     async def fake_security_features(args):
         calls.append("security-features")
         return 0
 
-    monkeypatch.setattr(repo_admin, "cmd_merge_sync", failing)
+    monkeypatch.setattr(repo_admin, "_merge_settings_sync", failing)
+    monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_squash_title)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_branch_protection)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_security_features)
     args = argparse.Namespace(dry_run=True, repos=[], skip=None, verbose=False)
     assert await repo_admin.cmd_sync(args) == 1
-    assert calls == ["merge-settings", "branch-protection", "security-features"]
+    assert calls == [
+        "merge-settings",
+        "branch-protection",
+        "squash-title",
+        "security-features",
+    ]
 
 
 async def test_cmd_sync_returns_nonzero_when_a_command_returns_nonzero(monkeypatch):
@@ -2160,7 +2163,8 @@ async def test_cmd_sync_returns_nonzero_when_a_command_returns_nonzero(monkeypat
     async def fake_zero(args):
         return 0
 
-    monkeypatch.setattr(repo_admin, "cmd_merge_sync", fake_one)
+    monkeypatch.setattr(repo_admin, "_merge_settings_sync", fake_one)
+    monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
     args = argparse.Namespace(dry_run=True, repos=[], skip=None, verbose=False)
@@ -2177,7 +2181,8 @@ async def test_cmd_sync_runs_pages_sync_last_for_mapped_repos_only(monkeypatch):
         seen.append(args.repos)
         return 0
 
-    monkeypatch.setattr(repo_admin, "cmd_merge_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "_merge_settings_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_pages_sync", fake_pages)
