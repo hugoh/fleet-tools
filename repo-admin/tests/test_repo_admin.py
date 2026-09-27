@@ -336,10 +336,16 @@ async def test_merge_settings_worker_apply_limited_when_partially_fixed(monkeypa
 SQUASH_ON = {
     "squash_merge_commit_title": "PR_TITLE",
     "squash_merge_commit_message": "COMMIT_MESSAGES",
+    "allow_squash_merge": True,
+    "allow_merge_commit": False,
+    "allow_rebase_merge": False,
 }
 SQUASH_OFF = {
     "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
     "squash_merge_commit_message": "COMMIT_MESSAGES",
+    "allow_squash_merge": True,
+    "allow_merge_commit": True,
+    "allow_rebase_merge": True,
 }
 
 
@@ -359,6 +365,9 @@ def test_has_semantic_pr_check_absent():
 def test_squash_title_at_target():
     assert repo_admin.squash_title_at_target(SQUASH_ON)
     assert not repo_admin.squash_title_at_target(SQUASH_OFF)
+    assert not repo_admin.squash_title_at_target(
+        {**SQUASH_ON, "allow_rebase_merge": True}
+    )
     assert not repo_admin.squash_title_at_target({})
 
 

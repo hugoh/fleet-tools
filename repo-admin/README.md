@@ -50,8 +50,9 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   because branch protection requires PR branches to be up to date before
   merging; without auto-update, auto-merge PRs stall needing a manual
   "Update branch" click). Also sets the squash-merge subject to the PR
-  title (`squash_merge_commit_title=PR_TITLE`) for repos where `semantic-pr`
-  is already a required status check, so it needs no opt-in list.
+  title (`squash_merge_commit_title=PR_TITLE`) and makes squash the only
+  merge method for repos where `semantic-pr` is already a required status
+  check, so it needs no opt-in list.
 - **`protection sync [--dry-run] [--clear-stale-checks]
   [--adopt-renamed-checks]`** — requires status checks to pass and a
   PR (0 approvals needed, no direct pushes) before merging, matching the

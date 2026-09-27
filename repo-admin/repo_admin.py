@@ -270,7 +270,9 @@ def make_merge_settings_worker(owner: str, dry_run: bool):
 # squash_merge_commit_title=PR_TITLE makes the PR title the squash subject
 # unconditionally -- worth doing only where that title is linted into
 # Conventional-Commit form, i.e. where the `semantic-pr` reusable workflow's
-# check already gates merges on the default branch. The meta `sync` runs
+# check already gates merges on the default branch. Those repos are also made
+# squash-only (merge commits and rebase merges off), since only the squash
+# path uses the linted title. The meta `sync` runs
 # this after `protection sync`, so a repo gets it in the same run that makes
 # `semantic-pr` required, with no separate opt-in list to maintain.
 # ---------------------------------------------------------------------------
@@ -278,6 +280,9 @@ def make_merge_settings_worker(owner: str, dry_run: bool):
 SQUASH_MERGE_TARGET = {
     "squash_merge_commit_title": "PR_TITLE",
     "squash_merge_commit_message": "COMMIT_MESSAGES",
+    "allow_squash_merge": True,
+    "allow_merge_commit": False,
+    "allow_rebase_merge": False,
 }
 
 
