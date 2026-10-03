@@ -12,10 +12,13 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
                                  and PR-branch auto-update; set the squash
                                  subject to the PR title where semantic-pr
                                  is a required check
+  features sync                 set issues/wiki/projects/discussions per
+                                 config/features.yaml (fleet default plus
+                                 per-repo overrides)
   protection sync               apply a baseline branch-protection policy to
                                  each repo's default branch
   security sync                 enable free, native GitHub security features
-  sync                          run merge/protection/security/pages sync, in
+  sync                          run merge/features/protection/security/pages sync, in
                                  that order
   pages    status               list repos with GitHub Pages enabled and
                                  their custom domain, flagging ones missing
@@ -425,6 +428,69 @@ async def _squash_title_sync(args: argparse.Namespace) -> int:
 async def cmd_merge_sync(args: argparse.Namespace) -> int:
     await _merge_settings_sync(args)
     return await _squash_title_sync(args)
+
+
+# ---------------------------------------------------------------------------
+# features sync
+#
+# Turns the repo-page features (issues, wiki, projects, discussions) on or
+# off per config/features.yaml: a `"*"` entry for the fleet plus optional
+# per-repo overrides. Only keys the config names are touched. The sidebar
+# toggles for Releases/Packages/Deployments have no API and aren't managed.
+# ---------------------------------------------------------------------------
+
+
+async def _repo_features(owner: str, name: str) -> dict[str, bool]:
+    data = await api_json("GET", f"/repos/{owner}/{name}")
+    return {key: data[f"has_{key}"] for key in lib.FEATURE_KEYS}
+
+
+def make_features_worker(owner: str, dry_run: bool):
+    async def worker(repo: Repo) -> RepoResult:
+        desired = lib.repo_features(repo.name)
+
+        def drift(current: dict) -> dict[str, bool]:
+            return {k: v for k, v in desired.items() if current[k] != v}
+
+        def plan_result(current: dict) -> RepoResult:
+            todo = drift(current)
+            status = classify_status(at_target=True, changed=bool(todo))
+            detail = (
+                "would set: " + ", ".join(f"{k}={v}" for k, v in todo.items())
+                if todo
+                else str(current)
+            )
+            return RepoResult(repo, result_line(repo.name, detail, status), status)
+
+        async def apply_result(before: dict) -> RepoResult:
+            todo = drift(before)
+            if not todo:
+                status = classify_status(at_target=True, changed=False)
+                return RepoResult(
+                    repo, result_line(repo.name, str(before), status), status
+                )
+            await api_json(
+                "PATCH",
+                f"/repos/{owner}/{repo.name}",
+                json={f"has_{k}": v for k, v in todo.items()},
+            )
+            after = await _repo_features(owner, repo.name)
+            status = classify_status(at_target=not drift(after), changed=True)
+            detail = str(after) if before == after else f"{before} -> {after}"
+            return RepoResult(repo, result_line(repo.name, detail, status), status)
+
+        return await run_reconcile(
+            dry_run=dry_run,
+            fetch=lambda: _repo_features(owner, repo.name),
+            plan_result=plan_result,
+            apply_result=apply_result,
+        )
+
+    return worker
+
+
+async def _features_sync(args: argparse.Namespace) -> int:
+    return await _run_worker_sync(args, make_features_worker)
 
 
 # ---------------------------------------------------------------------------
@@ -2618,6 +2684,7 @@ async def cmd_sync(args: argparse.Namespace) -> int:
     failed = False
     for name, cmd in (
         ("merge sync", _merge_settings_sync),
+        ("features sync", _features_sync),
         ("protection sync", cmd_protection_sync),
         ("squash title sync", _squash_title_sync),
         ("security sync", cmd_security_sync),
@@ -2719,6 +2786,9 @@ def build_parser() -> argparse.ArgumentParser:
     protection_sync.set_defaults(func=cmd_protection_sync)
     resource_verbs("security").add_parser("sync", parents=[mutating]).set_defaults(
         func=cmd_security_sync
+    )
+    resource_verbs("features").add_parser("sync", parents=[mutating]).set_defaults(
+        func=_features_sync
     )
     resources.add_parser("sync", parents=[mutating]).set_defaults(func=cmd_sync)
 
