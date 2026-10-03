@@ -136,6 +136,7 @@ CONFIG_DIR = _config_dir()
 PAGES_DOMAINS_FILE = CONFIG_DIR / "pages-domains.yaml"
 BRANCH_PROTECTION_EXCLUDE_FILE = CONFIG_DIR / "branch-protection-exclude.yaml"
 FORKS_INCLUDE_FILE = CONFIG_DIR / "forks-include.yaml"
+FEATURES_FILE = CONFIG_DIR / "features.yaml"
 SECRETS_ENC_FILE = CONFIG_DIR / "secrets.enc.yaml"
 VARIABLES_FILE = CONFIG_DIR / "variables.yaml"
 VARIABLES_ENC_FILE = CONFIG_DIR / "variables.enc.yaml"
@@ -203,6 +204,26 @@ def default_pages_domains() -> dict[str, str]:
     OpenTofu config that generates the matching DNS records.
     """
     return _load_yaml(PAGES_DOMAINS_FILE) or {}
+
+
+FEATURE_KEYS = ("issues", "wiki", "projects", "discussions")
+
+
+def repo_features(name: str) -> dict[str, bool]:
+    """Desired repo features for `name`: features.yaml's `"*"` entry
+    overlaid with the repo's own entry. Empty when the file is absent or
+    names nothing, so an unconfigured fleet is left alone. An unknown
+    feature or non-boolean value is an error rather than a silent no-op.
+    """
+    raw = _load_yaml(FEATURES_FILE) or {}
+    merged = {**(raw.get("*") or {}), **(raw.get(name) or {})}
+    for key, value in merged.items():
+        if key not in FEATURE_KEYS or not isinstance(value, bool):
+            raise GhError(
+                f"{FEATURES_FILE.name}: {key}={value!r} for {name}: "
+                f"expected one of {', '.join(FEATURE_KEYS)} set to true/false"
+            )
+    return merged
 
 
 def _load_repo_map(path: Path) -> dict[str, list[str]]:

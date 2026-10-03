@@ -2113,6 +2113,7 @@ async def test_cmd_sync_runs_squash_title_after_protection(monkeypatch):
         return fake
 
     monkeypatch.setattr(repo_admin, "_merge_settings_sync", recorder("merge-settings"))
+    monkeypatch.setattr(repo_admin, "_features_sync", recorder("features"))
     monkeypatch.setattr(
         repo_admin, "cmd_protection_sync", recorder("branch-protection")
     )
@@ -2123,6 +2124,7 @@ async def test_cmd_sync_runs_squash_title_after_protection(monkeypatch):
     assert await repo_admin.cmd_sync(args) == 0
     assert calls == [
         "merge-settings",
+        "features",
         "branch-protection",
         "squash-title",
         "security-features",
@@ -2143,6 +2145,10 @@ async def test_cmd_sync_continues_after_a_command_fails_and_returns_nonzero(
         calls.append("branch-protection")
         return 0
 
+    async def fake_features(args):
+        calls.append("features")
+        return 0
+
     async def fake_squash_title(args):
         calls.append("squash-title")
         return 0
@@ -2152,6 +2158,7 @@ async def test_cmd_sync_continues_after_a_command_fails_and_returns_nonzero(
         return 0
 
     monkeypatch.setattr(repo_admin, "_merge_settings_sync", failing)
+    monkeypatch.setattr(repo_admin, "_features_sync", fake_features)
     monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_squash_title)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_branch_protection)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_security_features)
@@ -2159,6 +2166,7 @@ async def test_cmd_sync_continues_after_a_command_fails_and_returns_nonzero(
     assert await repo_admin.cmd_sync(args) == 1
     assert calls == [
         "merge-settings",
+        "features",
         "branch-protection",
         "squash-title",
         "security-features",
@@ -2173,6 +2181,7 @@ async def test_cmd_sync_returns_nonzero_when_a_command_returns_nonzero(monkeypat
         return 0
 
     monkeypatch.setattr(repo_admin, "_merge_settings_sync", fake_one)
+    monkeypatch.setattr(repo_admin, "_features_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
@@ -2191,6 +2200,7 @@ async def test_cmd_sync_runs_pages_sync_last_for_mapped_repos_only(monkeypatch):
         return 0
 
     monkeypatch.setattr(repo_admin, "_merge_settings_sync", fake_zero)
+    monkeypatch.setattr(repo_admin, "_features_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "_squash_title_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_protection_sync", fake_zero)
     monkeypatch.setattr(repo_admin, "cmd_security_sync", fake_zero)
@@ -3351,3 +3361,65 @@ def test_activity_subcommand_accepts_custom_knobs():
     assert args.window_months == 3
     assert args.half_life_days == 7
     assert args.limit == 5
+
+
+# ---------------------------------------------------------------------------
+# features sync
+# ---------------------------------------------------------------------------
+
+FEATURES_ALL_OFF = {
+    "has_issues": False,
+    "has_wiki": False,
+    "has_projects": False,
+    "has_discussions": False,
+}
+
+
+def _features_worker(monkeypatch, current, desired, *, dry_run):
+    calls = []
+
+    async def fake_api_json(method, path, **kwargs):
+        calls.append((method, kwargs.get("json")))
+        return current
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    monkeypatch.setattr(repo_admin.lib, "repo_features", lambda name: desired)
+    return repo_admin.make_features_worker("hugoh", dry_run), calls
+
+
+async def test_features_worker_dry_run_reports_without_patching(monkeypatch):
+    worker, calls = _features_worker(
+        monkeypatch,
+        {**FEATURES_ALL_OFF, "has_wiki": True},
+        {"issues": True, "wiki": False},
+        dry_run=True,
+    )
+    result = await worker(REPO)
+    assert "would set: issues=True, wiki=False" in result.line
+    assert result.status == Status.OK
+    assert [m for m, _ in calls] == ["GET"]
+
+
+async def test_features_worker_apply_patches_only_differing_fields(monkeypatch):
+    worker, calls = _features_worker(
+        monkeypatch,
+        {**FEATURES_ALL_OFF, "has_wiki": True},
+        {"issues": True, "wiki": False},
+        dry_run=False,
+    )
+    await worker(REPO)
+    assert ("PATCH", {"has_issues": True, "has_wiki": False}) in calls
+
+
+async def test_features_worker_unchanged_when_at_target(monkeypatch):
+    worker, calls = _features_worker(
+        monkeypatch, {**FEATURES_ALL_OFF}, {"wiki": False}, dry_run=False
+    )
+    result = await worker(REPO)
+    assert result.status == Status.UNCHANGED
+    assert [m for m, _ in calls] == ["GET"]
+
+
+def test_features_sync_subcommand_is_registered_in_parser():
+    args = repo_admin.build_parser().parse_args(["features", "sync", "--dry-run"])
+    assert args.func == repo_admin._features_sync

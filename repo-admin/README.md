@@ -45,6 +45,10 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   carry no version numbers. Idempotent: existing files are kept (`--force`
   to overwrite), an existing git/jj repo is left as-is. `--dry-run` to
   preview. See `repo scaffold --help` for the full flag list.
+- **`features sync [--dry-run]`** — sets issues, wiki, projects and
+  discussions from `config/features.yaml`: a `"*"` entry plus optional
+  per-repo overrides. Keys the config doesn't name are left alone. The
+  Releases/Packages/Deployments sidebar toggles have no API.
 - **`merge sync [--dry-run]`** — enables auto-merge,
   delete-branch-on-merge, and PR-branch auto-update (the last one matters
   because branch protection requires PR branches to be up to date before
@@ -105,7 +109,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   private repos need GitHub Advanced Security, a paid add-on this
   account's plan doesn't include; such repos are reported as unavailable,
   not failed, as are repos with no CodeQL-supported language).
-- **`sync [--dry-run]`** — runs `merge sync`, `protection sync`,
+- **`sync [--dry-run]`** — runs `merge sync`, `features sync`, `protection sync`,
   `security sync`, then `pages sync` in sequence, with `merge sync`'s
   squash-title step moved to just after `protection sync` so a repo that
   newly gets `semantic-pr` required is fully set up in one run. One command failing

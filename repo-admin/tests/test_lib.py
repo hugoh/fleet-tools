@@ -500,3 +500,25 @@ async def test_fetch_workflow_texts_returns_empty_when_no_workflows_dir(
         return_value=httpx.Response(404, json={"message": "Not Found"})
     )
     assert await lib.fetch_workflow_texts("hugoh", "repo") == []
+
+
+def test_repo_features_merges_default_then_repo_override(tmp_path, monkeypatch):
+    features_file = tmp_path / "features.yaml"
+    features_file.write_text("'*': {issues: true, wiki: false}\nhrd: {wiki: true}\n")
+    monkeypatch.setattr(lib, "FEATURES_FILE", features_file)
+    assert lib.repo_features("other") == {"issues": True, "wiki": False}
+    assert lib.repo_features("hrd") == {"issues": True, "wiki": True}
+
+
+def test_repo_features_empty_when_file_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(lib, "FEATURES_FILE", tmp_path / "features.yaml")
+    assert lib.repo_features("hrd") == {}
+
+
+@pytest.mark.parametrize("body", ["'*': {wikis: true}", "'*': {wiki: yes please}"])
+def test_repo_features_rejects_unknown_key_or_non_bool(tmp_path, monkeypatch, body):
+    features_file = tmp_path / "features.yaml"
+    features_file.write_text(body)
+    monkeypatch.setattr(lib, "FEATURES_FILE", features_file)
+    with pytest.raises(GhError):
+        lib.repo_features("hrd")
