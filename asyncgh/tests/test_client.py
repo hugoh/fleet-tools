@@ -499,3 +499,42 @@ async def test_github_client_as_context_manager_closes_on_exit(
         http = gh._http
         assert http is not None
     assert http.is_closed
+
+
+async def test_graphql_retries_undecodable_success_body_then_succeeds(
+    httpx2_mock: respx.Router,
+):
+    route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
+        side_effect=[
+            httpx.Response(200, content=b""),
+            httpx.Response(200, json={"data": {"ok": True}}),
+        ]
+    )
+    data = await graphql("query { ok }")
+    assert data == {"ok": True}
+    assert route.call_count == 2
+
+
+async def test_graphql_raises_gh_error_when_success_body_stays_undecodable(
+    httpx2_mock: respx.Router,
+):
+    route = httpx2_mock.post(f"{API_BASE}/graphql").mock(
+        return_value=httpx.Response(200, content=b"")
+    )
+    with pytest.raises(GhError, match="not valid JSON"):
+        await graphql("query { ok }")
+    assert route.call_count == client.DEFAULT_MAX_RETRIES + 1
+
+
+async def test_graphql_invalid_body_error_includes_status_and_body_prefix(
+    httpx2_mock: respx.Router,
+):
+    httpx2_mock.post(f"{API_BASE}/graphql").mock(
+        return_value=httpx.Response(200, content=b"<html>" + b"x" * 500)
+    )
+    with pytest.raises(GhError) as excinfo:
+        await graphql("query { ok }")
+    message = str(excinfo.value)
+    assert "status 200" in message
+    assert "<html>xxx" in message
+    assert "x" * 300 not in message

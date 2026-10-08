@@ -119,9 +119,18 @@ class _GraphQLRateLimited(Exception):
     """
 
 
+class _GraphQLInvalidBody(Exception):
+    """Internal marker: GraphQL answered 2xx with a body that isn't JSON
+    (typically empty, from a gateway giving up on an expensive query).
+    Transient, so retried on the default backoff.
+    """
+
+
 def _should_retry_graphql(exc: Exception) -> bool | float:
     if isinstance(exc, _GraphQLRateLimited):
         return SECONDARY_RATE_LIMIT_WAIT
+    if isinstance(exc, _GraphQLInvalidBody):
+        return True
     return _should_retry(exc)
 
 
@@ -324,7 +333,14 @@ class GitHubClient:
                         raise GhError(
                             error_message(response), status_code=response.status_code
                         )
-                    body = response.json()
+                    try:
+                        body = response.json()
+                    except ValueError as exc:
+                        raise _GraphQLInvalidBody(
+                            "GraphQL response body is not valid JSON "
+                            f"(status {response.status_code}, "
+                            f"body: {response.text[:200]!r}): {exc}"
+                        ) from exc
                     errors = body.get("errors")
                     if not errors:
                         return body["data"]
@@ -334,7 +350,7 @@ class GitHubClient:
                         _format_graphql_errors(errors),
                         error_type=errors[0].get("type"),
                     )
-        except _GraphQLRateLimited as exc:
+        except (_GraphQLRateLimited, _GraphQLInvalidBody) as exc:
             raise GhError(str(exc)) from exc
         except httpx2.HTTPStatusError as exc:
             raise GhError(
