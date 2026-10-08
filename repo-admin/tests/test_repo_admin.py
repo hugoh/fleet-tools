@@ -498,12 +498,12 @@ def test_security_summarize_all_available_and_enabled():
         "security_and_analysis": {
             "secret_scanning": {"status": "enabled"},
             "secret_scanning_push_protection": {"status": "enabled"},
-            "dependabot_security_updates": {"status": "enabled"},
         }
     }
     summary = repo_admin.security_summarize(
         repo_json,
         vuln_alerts_enabled=True,
+        dependabot_enabled=True,
         pvr_json={"enabled": True},
         codeql_json={"state": "configured"},
     )
@@ -515,17 +515,18 @@ def test_security_summarize_reports_would_enable():
         "security_and_analysis": {
             "secret_scanning": {"status": "disabled"},
             "secret_scanning_push_protection": {"status": "enabled"},
-            "dependabot_security_updates": {"status": "enabled"},
         }
     }
     summary = repo_admin.security_summarize(
         repo_json,
         vuln_alerts_enabled=False,
+        dependabot_enabled=False,
         pvr_json={"enabled": True},
         codeql_json={"state": "not-configured"},
     )
     assert set(summary["would_enable"]) == {
         "vuln_alerts",
+        "dependabot_updates",
         "secret_scanning",
         "code_scanning",
     }
@@ -535,15 +536,19 @@ def test_security_summarize_reports_would_enable():
 def test_security_summarize_reports_unavailable_for_private_repo():
     # Private repos without GitHub Advanced Security: these keys are absent
     # from security_and_analysis, and private-vulnerability-reporting and
-    # code-scanning default setup both 404.
+    # code-scanning default setup both 404. Dependabot security updates are
+    # free on private repos, so they are NOT in this set.
     repo_json = {"security_and_analysis": {}}
     summary = repo_admin.security_summarize(
-        repo_json, vuln_alerts_enabled=True, pvr_json=None, codeql_json=None
+        repo_json,
+        vuln_alerts_enabled=True,
+        dependabot_enabled=True,
+        pvr_json=None,
+        codeql_json=None,
     )
     assert set(summary["unavailable"]) == {
         "secret_scanning",
         "push_protection",
-        "dependabot_updates",
         "private_vuln_reporting",
         "code_scanning",
     }
@@ -572,7 +577,6 @@ FULLY_ENABLED_REPO_JSON = {
     "security_and_analysis": {
         "secret_scanning": {"status": "enabled"},
         "secret_scanning_push_protection": {"status": "enabled"},
-        "dependabot_security_updates": {"status": "enabled"},
     }
 }
 UNAVAILABLE_REPO_JSON = {"security_and_analysis": {}}
@@ -605,10 +609,12 @@ def _security_worker(
     pvr_json,
     dry_run,
     codeql_json=None,
+    dependabot_enabled=True,
     api_responses=(),
+    calls=None,
 ):
     async def fake_fetch_security_state(owner, name):
-        return repo_json, vuln_alerts_enabled, pvr_json, codeql_json
+        return repo_json, vuln_alerts_enabled, dependabot_enabled, pvr_json, codeql_json
 
     responses_iter = iter(api_responses)
 
@@ -616,6 +622,8 @@ def _security_worker(
         return {}
 
     async def fake_api_raw(*a, **k):
+        if calls is not None:
+            calls.append((a, k))
         return next(responses_iter)
 
     monkeypatch.setattr(repo_admin, "_fetch_security_state", fake_fetch_security_state)
@@ -682,7 +690,12 @@ async def test_security_worker_apply_unchanged_when_already_fully_enabled(monkey
         pvr_json={"enabled": True},
         codeql_json=CONFIGURED_CODEQL_JSON,
         dry_run=False,
-        api_responses=[_FakeResponse(200), _FakeResponse(200), _FakeResponse(200)],
+        api_responses=[
+            _FakeResponse(200),
+            _FakeResponse(204),
+            _FakeResponse(200),
+            _FakeResponse(200),
+        ],
     )
     result = await worker(REPO)
     assert result.status == Status.UNCHANGED
@@ -697,7 +710,12 @@ async def test_security_worker_apply_ok_when_newly_enabled(monkeypatch):
         pvr_json={"enabled": True},
         codeql_json=CONFIGURED_CODEQL_JSON,
         dry_run=False,
-        api_responses=[_FakeResponse(200), _FakeResponse(200), _FakeResponse(200)],
+        api_responses=[
+            _FakeResponse(200),
+            _FakeResponse(204),
+            _FakeResponse(200),
+            _FakeResponse(200),
+        ],
     )
     assert (await worker(REPO)).status == Status.OK
 
@@ -712,7 +730,12 @@ async def test_security_worker_apply_limited_unchanged_when_unavailable_and_noth
         pvr_json=None,
         codeql_json=None,
         dry_run=False,
-        api_responses=[_FakeResponse(422), _FakeResponse(404), _FakeResponse(404)],
+        api_responses=[
+            _FakeResponse(422),
+            _FakeResponse(204),
+            _FakeResponse(404),
+            _FakeResponse(404),
+        ],
     )
     assert (await worker(REPO)).status == Status.LIMITED_UNCHANGED
 
@@ -727,7 +750,12 @@ async def test_security_worker_apply_limited_when_unavailable_and_was_pending(
         pvr_json=None,
         codeql_json=None,
         dry_run=False,
-        api_responses=[_FakeResponse(422), _FakeResponse(404), _FakeResponse(404)],
+        api_responses=[
+            _FakeResponse(422),
+            _FakeResponse(204),
+            _FakeResponse(404),
+            _FakeResponse(404),
+        ],
     )
     assert (await worker(REPO)).status == Status.LIMITED
 
@@ -742,11 +770,64 @@ async def test_security_worker_apply_reports_code_scanning_unavailable_for_no_su
         pvr_json={"enabled": True},
         codeql_json=None,
         dry_run=False,
-        api_responses=[_FakeResponse(200), _FakeResponse(200), _FakeResponse(422)],
+        api_responses=[
+            _FakeResponse(200),
+            _FakeResponse(204),
+            _FakeResponse(200),
+            _FakeResponse(422),
+        ],
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert "code scanning" in result.line
+
+
+async def test_security_worker_apply_enables_dependabot_via_dedicated_endpoint(
+    monkeypatch,
+):
+    calls = []
+    worker = _security_worker(
+        monkeypatch,
+        repo_json=UNAVAILABLE_REPO_JSON,
+        vuln_alerts_enabled=True,
+        dependabot_enabled=False,
+        pvr_json=None,
+        codeql_json=None,
+        dry_run=False,
+        api_responses=[
+            _FakeResponse(422),
+            _FakeResponse(204),
+            _FakeResponse(404),
+            _FakeResponse(404),
+        ],
+        calls=calls,
+    )
+    result = await worker(REPO)
+    assert result.status == Status.LIMITED
+    patch_body = calls[0][1]["json"]["security_and_analysis"]
+    assert "dependabot_security_updates" not in patch_body
+    assert calls[1][0] == ("PUT", "/repos/hugoh/repo/automated-security-fixes")
+
+
+async def test_security_worker_apply_reports_dependabot_unavailable(monkeypatch):
+    worker = _security_worker(
+        monkeypatch,
+        repo_json=FULLY_ENABLED_REPO_JSON,
+        vuln_alerts_enabled=True,
+        dependabot_enabled=False,
+        pvr_json={"enabled": True},
+        codeql_json=CONFIGURED_CODEQL_JSON,
+        dry_run=False,
+        api_responses=[
+            _FakeResponse(200),
+            _FakeResponse(404),
+            _FakeResponse(200),
+            _FakeResponse(200),
+        ],
+    )
+    result = await worker(REPO)
+    assert result.status == Status.LIMITED
+    assert "dependabot security updates" in result.line
 
 
 # ---------------------------------------------------------------------------

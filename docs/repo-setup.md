@@ -19,9 +19,9 @@ Run from `fleet-tools/`:
   own-workflow check runs. Public repos use classic branch protection; private
   repos (no classic protection on this plan) get an equivalent branch ruleset
   with an owner bypass, so you can still push straight to their default branch.
-- **`security sync`** — Dependabot alerts + (public repos) secret scanning,
-  Dependabot security updates, private vulnerability reporting, CodeQL default
-  setup.
+- **`security sync`** — Dependabot alerts and security updates (all repos) +
+  (public repos) secret scanning, private vulnerability reporting, CodeQL
+  default setup.
 
 ## Per-repo files (scaffold once, Renovate maintains)
 
