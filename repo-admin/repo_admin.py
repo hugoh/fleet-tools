@@ -1096,6 +1096,21 @@ def _reconcile_reusable_prefix(
     return sorted(set(out))
 
 
+def _live_unsampled_checks(
+    sampled: list[str], existing: list[str], base_branch_checks: set[str]
+) -> set[str]:
+    """Required checks the PR sample can't see (push-only jobs like `pages` or
+    `release`) but that `main` still reports: a rename adoption must keep them.
+    """
+    return {
+        e
+        for e in existing
+        if e in base_branch_checks
+        and e not in sampled
+        and not any(e.endswith(f" / {c}") or c.endswith(f" / {e}") for c in sampled)
+    }
+
+
 def _renamed_on_base_branch(
     sampled: str, existing: str, base_branch_checks: set[str] | None
 ) -> bool:
@@ -1504,7 +1519,8 @@ def make_branch_protection_worker(
                     base_branch_checks,
                     prefer_sampled=adopt_renamed_checks,
                 )
-                renamed = sorted(set(existing) - set(reconciled) - set(contexts))
+                live = _live_unsampled_checks(contexts, existing, base_branch_checks)
+                renamed = sorted(set(existing) - set(reconciled) - set(contexts) - live)
                 if reconciled != sorted(set(contexts)):
                     kept = sorted(set(reconciled) - set(contexts))
                     pending_note = (
@@ -1513,7 +1529,7 @@ def make_branch_protection_worker(
                         "(reusable-workflow check-name inconsistency across runs; "
                         "if this is a real rename, rerun with --adopt-renamed-checks)"
                     )
-                    contexts = reconciled
+                    contexts = sorted(set(reconciled) | live)
                     stale_retained = True
                     rename_candidate = True
                 elif renamed:
@@ -1526,7 +1542,7 @@ def make_branch_protection_worker(
                         f"dropped {', '.join(renamed)} for sampled "
                         f"{', '.join(sorted(set(contexts)))} ({reason})"
                     )
-                    contexts = reconciled
+                    contexts = sorted(set(reconciled) | live)
         if not pr_head_shas:
             pending_note = "no pull requests found yet, requiring none for now"
         elif not contexts and existing and not clear_stale_checks:

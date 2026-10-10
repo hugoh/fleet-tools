@@ -1428,6 +1428,42 @@ async def test_branch_protection_worker_adopt_renamed_checks_flag_breaks_deadloc
     assert "PUT" in calls
 
 
+async def test_branch_protection_worker_adopt_renamed_checks_keeps_live_push_only_checks(
+    monkeypatch,
+):
+    # `pages` never runs on a PR so the sample lacks it, but `main` still
+    # reports it: adopting a rename must not drop a gate that is still live.
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["prsha"],
+        contexts=["Tests"],
+        current=_protection_state(contexts=["test / Tests", "pages"]),
+        base_checks=["test / Tests", "pages"],
+        adopt_renamed_checks=True,
+    )
+    result = await worker(REPO)
+    assert "require: Tests, pages" in result.line
+    assert "dropped test / Tests" in result.line
+
+
+async def test_branch_protection_worker_adopt_renamed_checks_drops_dead_unmatched_check(
+    monkeypatch,
+):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["prsha"],
+        contexts=["Tests"],
+        current=_protection_state(contexts=["test / Tests", "retired"]),
+        base_checks=["test / Tests"],
+        adopt_renamed_checks=True,
+    )
+    result = await worker(REPO)
+    assert "require: Tests " in result.line or "require: Tests (" in result.line
+    assert "retired" in result.line
+
+
 async def test_branch_protection_worker_without_flag_keeps_stale_gate_on_deadlock(
     monkeypatch,
 ):
