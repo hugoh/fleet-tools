@@ -1004,6 +1004,25 @@ async def test_check_run_contexts_collapses_local_matrix_with_named_gate(monkeyp
     assert contexts == ["git-gate"]
 
 
+async def test_check_run_contexts_drops_skipped_job_covered_by_gate(monkeypatch):
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response(
+            [
+                _run("hk / hk", "success"),
+                _run("git", "skipped"),
+                _run("git-gate", "success"),
+                _run("jj", "skipped"),
+                _run("jj-gate", "success"),
+                _run("pages", "skipped"),
+            ]
+        )
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts("hugoh", "repo", ["sha1"])
+    assert contexts == ["git-gate", "hk / hk", "jj-gate", "pages"]
+
+
 async def test_check_run_contexts_drops_conditional_reusable_checks_shadowed_by_wrapper_gate(
     monkeypatch,
 ):

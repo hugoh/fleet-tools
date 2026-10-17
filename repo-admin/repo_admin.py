@@ -995,6 +995,13 @@ async def _check_run_contexts(
         for run in latest_runs
         if run["conclusion"] == "skipped" and " / " not in run["name"]
     }
+    # A path-filtered caller/matrix job (`git`, `jj`) that was skipped posts only
+    # its bare job id, which never posts again once the job runs (its legs are
+    # "git (ubuntu-24.04)", not "git / ..."). The always-running "<job>-gate"
+    # wrapper is the stable stand-in, so the skip artifact is simply dropped.
+    for name in {n for n in suspect if f"{n}-gate" in contexts}:
+        contexts.discard(name)
+        suspect.discard(name)
     if not suspect:
         return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
 
