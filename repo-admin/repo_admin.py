@@ -999,9 +999,9 @@ async def _check_run_contexts(
     # its bare job id, which never posts again once the job runs (its legs are
     # "git (ubuntu-24.04)", not "git / ..."). The always-running "<job>-gate"
     # wrapper is the stable stand-in, so the skip artifact is simply dropped.
-    for name in {n for n in suspect if f"{n}-gate" in contexts}:
-        contexts.discard(name)
-        suspect.discard(name)
+    for job in {n for n in suspect if f"{n}-gate" in contexts}:
+        contexts.discard(job)
+        suspect.discard(job)
     if not suspect:
         return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
 
