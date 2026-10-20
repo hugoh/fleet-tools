@@ -533,7 +533,7 @@ def test_security_summarize_reports_would_enable():
 def test_security_summarize_reports_unavailable_for_private_repo():
     # Private repos without GitHub Advanced Security: these keys are absent
     # from security_and_analysis, and private-vulnerability-reporting and
-    # code-scanning default setup both 404. 
+    # code-scanning default setup both 404.
     repo_json = {"security_and_analysis": {}}
     summary = repo_admin.security_summarize(
         repo_json,
