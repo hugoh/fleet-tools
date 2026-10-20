@@ -498,9 +498,9 @@ async def _features_sync(args: argparse.Namespace) -> int:
 #
 # Enables free, native GitHub security features:
 #   - Dependabot vulnerability alerts -- works on every repo, no plan gate
-#   - Dependabot security updates -- free on every repo, enabled through its
-#     own endpoint so a private repo's rejected secret-scanning request
-#     can't block it
+#   - Dependabot security updates are turned OFF (their PRs are unwanted;
+#     Renovate maintains dependencies), through their own endpoint so a
+#     private repo's rejected secret-scanning request can't block it
 #   - secret scanning and secret scanning push protection -- public repos
 #     only; private repos need GitHub Advanced Security, a paid add-on this
 #     account's plan doesn't include
@@ -517,7 +517,6 @@ def security_summarize(
     repo_json: dict,
     *,
     vuln_alerts_enabled: bool,
-    dependabot_enabled: bool,
     pvr_json: dict | None,
     codeql_json: dict | None,
 ) -> dict:
@@ -533,7 +532,6 @@ def security_summarize(
             == "enabled",
             sec.get("secret_scanning_push_protection") is not None,
         ),
-        "dependabot_updates": (dependabot_enabled, True),
         "private_vuln_reporting": (
             (pvr_json or {}).get("enabled") is True,
             pvr_json is not None,
@@ -556,7 +554,7 @@ def security_dry_run_line(name: str, summary: dict, status: Status) -> str:
 
 async def _fetch_security_state(
     owner: str, name: str
-) -> tuple[dict, bool, bool, dict | None, dict | None]:
+) -> tuple[dict, bool, dict | None, dict | None]:
     repo_json = await api_json("GET", f"/repos/{owner}/{name}")
 
     # 204 = enabled, 404 = disabled -- GitHub's documented shape for this
@@ -567,21 +565,6 @@ async def _fetch_security_state(
             error_message(vuln_response), status_code=vuln_response.status_code
         )
     vuln_alerts_enabled = vuln_response.status_code == 204
-
-    # 200 = body has "enabled"; 404 = Dependabot alerts are off, so security
-    # updates are too.
-    dependabot_response = await api_raw(
-        "GET", f"/repos/{owner}/{name}/automated-security-fixes"
-    )
-    if dependabot_response.status_code not in (200, 404):
-        raise GhError(
-            error_message(dependabot_response),
-            status_code=dependabot_response.status_code,
-        )
-    dependabot_enabled = (
-        dependabot_response.status_code == 200
-        and dependabot_response.json().get("enabled") is True
-    )
 
     # 200 = available (body has "enabled"), 404 = not available on this plan.
     pvr_response = await api_raw(
@@ -602,7 +585,7 @@ async def _fetch_security_state(
         )
     codeql_json = codeql_response.json() if codeql_response.status_code == 200 else None
 
-    return repo_json, vuln_alerts_enabled, dependabot_enabled, pvr_json, codeql_json
+    return repo_json, vuln_alerts_enabled, pvr_json, codeql_json
 
 
 def make_security_features_worker(owner: str, dry_run: bool):
@@ -611,14 +594,12 @@ def make_security_features_worker(owner: str, dry_run: bool):
             (
                 repo_json,
                 vuln_alerts_enabled,
-                dependabot_enabled,
                 pvr_json,
                 codeql_json,
             ) = await _fetch_security_state(owner, repo.name)
             return security_summarize(
                 repo_json,
                 vuln_alerts_enabled=vuln_alerts_enabled,
-                dependabot_enabled=dependabot_enabled,
                 pvr_json=pvr_json,
                 codeql_json=codeql_json,
             )
@@ -654,12 +635,13 @@ def make_security_features_worker(owner: str, dry_run: bool):
                     status_code=security_response.status_code,
                 )
 
+            # 204 = disabled; 404 = alerts are off, so security updates are too.
             dependabot_response = await api_raw(
-                "PUT", f"/repos/{owner}/{repo.name}/automated-security-fixes"
+                "DELETE", f"/repos/{owner}/{repo.name}/automated-security-fixes"
             )
-            if dependabot_response.status_code in (403, 404):
-                unavailable.append("dependabot security updates")
-            elif not dependabot_response.is_success:
+            if dependabot_response.status_code != 404 and not (
+                dependabot_response.is_success
+            ):
                 raise GhError(
                     error_message(dependabot_response),
                     status_code=dependabot_response.status_code,

@@ -103,7 +103,8 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   CI/PR workflow) are skipped entirely — no classic protection, no ruleset;
   override per-run with `GH_BRANCH_PROTECTION_EXCLUDE`.
 - **`security sync [--dry-run]`** — enables Dependabot vulnerability
-  alerts and Dependabot security updates (all repos, free), plus secret
+  alerts (all repos, free) and disables Dependabot security updates (no
+  Dependabot PRs), plus secret
   scanning, secret scanning push protection, private vulnerability
   reporting, and CodeQL code scanning default setup (public repos only —
   private repos need GitHub Advanced Security, a paid add-on this
