@@ -530,6 +530,23 @@ def test_security_summarize_reports_would_enable():
     assert summary["unavailable"] == []
 
 
+def test_security_summarize_reports_dependabot_security_updates_on():
+    repo_json = {
+        "security_and_analysis": {
+            "secret_scanning": {"status": "enabled"},
+            "secret_scanning_push_protection": {"status": "enabled"},
+            "dependabot_security_updates": {"status": "enabled"},
+        }
+    }
+    summary = repo_admin.security_summarize(
+        repo_json,
+        vuln_alerts_enabled=True,
+        pvr_json={"enabled": True},
+        codeql_json={"state": "configured"},
+    )
+    assert summary["would_enable"] == ["dependabot_updates_off"]
+
+
 def test_security_summarize_reports_unavailable_for_private_repo():
     # Private repos without GitHub Advanced Security: these keys are absent
     # from security_and_analysis, and private-vulnerability-reporting and

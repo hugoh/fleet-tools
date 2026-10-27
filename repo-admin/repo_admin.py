@@ -523,6 +523,10 @@ def security_summarize(
     sec = repo_json.get("security_and_analysis") or {}
     features = {
         "vuln_alerts": (vuln_alerts_enabled, True),
+        "dependabot_updates_off": (
+            (sec.get("dependabot_security_updates") or {}).get("status") != "enabled",
+            True,
+        ),
         "secret_scanning": (
             (sec.get("secret_scanning") or {}).get("status") == "enabled",
             sec.get("secret_scanning") is not None,
