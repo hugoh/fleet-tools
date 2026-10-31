@@ -6,8 +6,11 @@ on: # yamllint disable-line rule:truthy
     branches:
       - << default_branch >>
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-caller-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:

@@ -23,7 +23,7 @@ def _args(path: Path, **overrides: object) -> argparse.Namespace:
         "rerun_transient_ref": "cafef00d # v0.9.9",
         "pages_dir": "site",
         "pages_build_cmd": "mise run pages-build",
-        "watch_workflows": "[ci, hk]",
+        "watch_workflows": "[hk]",
         "force": None,
         "no_pin": True,
         "dry_run": False,
@@ -164,9 +164,9 @@ async def test_rendered_workflows_are_valid_yaml(tmp_path: Path) -> None:
         yaml.safe_load(wf.read_text())
 
 
-def test_scaffolded_repo_passes_actionlint(tmp_path: Path) -> None:
-    if not _have("actionlint"):
-        pytest.skip("actionlint not on PATH")
+def test_scaffolded_repo_passes_jactionlint(tmp_path: Path) -> None:
+    if not _have("jactionlint"):
+        pytest.skip("jactionlint not on PATH")
     import asyncio
 
     target = tmp_path / "widget"
@@ -174,7 +174,11 @@ def test_scaffolded_repo_passes_actionlint(tmp_path: Path) -> None:
         _run(target, release=True, pages=True, rerun_transient=True, action=True)
     )
     proc = subprocess.run(
-        ["actionlint", *map(str, (target / ".github/workflows").glob("*.yml"))],
+        [
+            "jactionlint",
+            "--ignore=unpinned-uses",
+            *map(str, (target / ".github/workflows").glob("*.yml")),
+        ],
         capture_output=True,
         text=True,
         check=False,

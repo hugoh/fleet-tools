@@ -1012,6 +1012,12 @@ async def test_check_run_contexts_drops_conditional_reusable_checks_shadowed_by_
     assert contexts == ["hk / hk", "jj-gate"]
 
 
+def test_drop_shadowed_by_wrapper_gate_drops_bare_skipped_caller_job():
+    assert repo_admin._drop_shadowed_by_wrapper_gate(
+        {"git", "git-gate", "git / gate", "jj-gate", "hk / hk"}
+    ) == {"git-gate", "jj-gate", "hk / hk"}
+
+
 def test_collapse_matrix_legs_drops_prefixed_legs_covered_by_gate():
     assert repo_admin._collapse_matrix_legs(
         {"jj / gate", "jj / test (0.42)", "jj / test (0.43)"}

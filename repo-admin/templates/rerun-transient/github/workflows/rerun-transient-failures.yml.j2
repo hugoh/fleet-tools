@@ -4,12 +4,16 @@ name: rerun-transient-failures
 # workflow_run is safe here: top-level permissions are {}, the one job gets
 # only actions:write, nothing checks out the triggering ref, no secrets — it
 # just calls `gh run rerun` on the run's own id.
-on: # zizmor: ignore[dangerous-triggers]
+on: # jactionlint ignore=dangerous-triggers
   workflow_run:
     workflows: << watch_workflows >>
     types: [completed]
 
 permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.id }}
+  cancel-in-progress: true
 
 jobs:
   rerun:
