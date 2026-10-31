@@ -1020,18 +1020,18 @@ def _collapse_matrix_legs(contexts: set[str]) -> set[str]:
 
 
 def _drop_shadowed_by_wrapper_gate(contexts: set[str]) -> set[str]:
-    """Drop "<job> / ..." checks when a top-level "<job>-gate" wrapper exists.
+    """Drop "<job>" and "<job> / ..." checks when a top-level "<job>-gate" wrapper exists.
 
     A path-filtered caller job `jj` posts its reusable workflow's checks
-    ("jj / gate") only when it actually runs; requiring them strands every PR
-    that skips it. The always-running `jj-gate` wrapper is the stable stand-in.
+    ("jj / gate") only when it actually runs, and a bare "jj" when skipped;
+    requiring either strands or vacuously satisfies every PR. The
+    always-running `jj-gate` wrapper is the stable stand-in.
     """
-    wrappers = {
-        name.removesuffix("-gate") + " / "
-        for name in contexts
-        if name.endswith("-gate")
+    jobs = {name.removesuffix("-gate") for name in contexts if name.endswith("-gate")}
+    prefixes = tuple(job + " / " for job in jobs)
+    return {
+        name for name in contexts if name not in jobs and not name.startswith(prefixes)
     }
-    return {name for name in contexts if not name.startswith(tuple(wrappers))}
 
 
 def _gate_sibling(prefix: str, job: str) -> set[str]:
