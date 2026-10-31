@@ -39,9 +39,8 @@ TEMPLATES = Path(__file__).resolve().parent / "templates"
 BASE_TOOLS = (
     "hk",
     "uv",
-    "actionlint",
+    "jactionlint",
     "pinact",
-    "zizmor",
     "ghalint",
     "gitleaks",
     "typos",
