@@ -962,6 +962,114 @@ async def test_check_run_contexts_collapses_matrix_legs_when_gate_present(monkey
     assert contexts == ["hk / hk", "jj / gate", "jj / versions"]
 
 
+async def test_check_run_contexts_skips_head_with_in_progress_runs(monkeypatch):
+    by_sha = {
+        "busy": [_run("anodizer (ubuntu-latest)", None), _run("test", "success")],
+        "done": [_run("cross-gate", "success"), _run("test", "success")],
+    }
+
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response(by_sha[path.split("/commits/")[1].split("/")[0]])
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts("hugoh", "repo", ["busy", "done"])
+    assert contexts == ["cross-gate", "test"]
+
+
+async def test_check_run_contexts_drops_jobs_covered_by_a_needs_gate(monkeypatch):
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response(
+            [
+                _run("cross-gate", "success"),
+                _run("changes", "success"),
+                _run("anodizer (ubuntu-latest)", "success"),
+                _run("anodizer (macos-latest)", "success"),
+                _run("test", "success"),
+            ]
+        )
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts(
+        "hugoh", "repo", ["sha"], gate_covered_jobs={"changes", "anodizer"}
+    )
+    assert contexts == ["cross-gate", "test"]
+
+
+async def test_check_run_contexts_keeps_covered_jobs_when_gate_not_sampled(monkeypatch):
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response([_run("changes", "success")])
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts(
+        "hugoh", "repo", ["sha"], gate_covered_jobs={"changes"}
+    )
+    assert contexts == ["changes"]
+
+
+async def test_gate_covered_jobs_reads_needs_and_strips_matrix_suffix(monkeypatch):
+    async def fake_docs(owner, name, ref):
+        return [
+            {
+                "jobs": {
+                    "changes": {},
+                    "anodizer": {"name": "anodizer (${{ matrix.os }})"},
+                    "cross-gate": {"needs": ["changes", "anodizer"]},
+                    "test": {},
+                }
+            }
+        ]
+
+    monkeypatch.setattr(repo_admin, "_workflow_docs", fake_docs)
+    assert await repo_admin._gate_covered_jobs("o", "r", "main") == {
+        "changes",
+        "anodizer",
+    }
+
+
+async def test_check_run_contexts_drops_push_only_jobs(monkeypatch):
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response(
+            [
+                _run("test", "success"),
+                _run("tag", "skipped"),
+                _run("build (${{ matrix.os }})", "skipped"),
+                _run("release", "skipped"),
+            ]
+        )
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts(
+        "hugoh", "repo", ["sha"], push_only_jobs={"tag", "build", "release"}
+    )
+    assert contexts == ["test"]
+
+
+async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
+    async def fake_docs(owner, name, ref):
+        return [
+            {
+                "jobs": {
+                    "test": {},
+                    "tag": {"if": "github.event_name == 'push' || x"},
+                    "build": {"name": "build (${{ matrix.os }})", "needs": "tag"},
+                    "release": {"needs": ["tag", "build"]},
+                    "mixed": {"if": "github.event_name == 'pull_request' || push"},
+                }
+            }
+        ]
+
+    monkeypatch.setattr(repo_admin, "_workflow_docs", fake_docs)
+    assert await repo_admin._push_only_jobs("o", "r", "main") == {
+        "tag",
+        "build",
+        "release",
+    }
+
+
 async def test_check_run_contexts_keeps_matrix_legs_without_gate(monkeypatch):
     async def fake_api_json(method, path, **k):
         return _check_runs_response(
@@ -1124,7 +1232,14 @@ def _branch_protection_worker(
     async def fake_base_checks(owner, name, default_branch):
         return set(base_checks)
 
-    async def fake_contexts(owner, name, shas, own_reusable_job_prefixes=None):
+    async def fake_contexts(
+        owner,
+        name,
+        shas,
+        own_reusable_job_prefixes=None,
+        gate_covered_jobs=None,
+        push_only_jobs=None,
+    ):
         return list(contexts)
 
     if current is not None:
@@ -1153,6 +1268,8 @@ def _branch_protection_worker(
     monkeypatch.setattr(repo_admin, "_recent_pr_head_shas", fake_shas)
     monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
     monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
+    monkeypatch.setattr(repo_admin, "_gate_covered_jobs", fake_prefixes)
+    monkeypatch.setattr(repo_admin, "_push_only_jobs", fake_prefixes)
     monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
     monkeypatch.setattr(repo_admin, "_base_branch_check_names", fake_base_checks)
     monkeypatch.setattr(repo_admin, "api_raw", fake_api_raw)
@@ -1940,7 +2057,14 @@ def _patch_branch_protection_lookups(monkeypatch, *, contexts, matching_rulesets
     async def fake_shas(owner, name):
         return ["sha"]
 
-    async def fake_contexts(owner, name, shas, own_reusable_job_prefixes=None):
+    async def fake_contexts(
+        owner,
+        name,
+        shas,
+        own_reusable_job_prefixes=None,
+        gate_covered_jobs=None,
+        push_only_jobs=None,
+    ):
         return list(contexts)
 
     async def fake_prefixes(owner, name, ref):
@@ -1952,6 +2076,8 @@ def _patch_branch_protection_lookups(monkeypatch, *, contexts, matching_rulesets
     monkeypatch.setattr(repo_admin, "_recent_pr_head_shas", fake_shas)
     monkeypatch.setattr(repo_admin, "_check_run_contexts", fake_contexts)
     monkeypatch.setattr(repo_admin, "_own_reusable_job_prefixes", fake_prefixes)
+    monkeypatch.setattr(repo_admin, "_gate_covered_jobs", fake_prefixes)
+    monkeypatch.setattr(repo_admin, "_push_only_jobs", fake_prefixes)
     monkeypatch.setattr(repo_admin, "_matching_rulesets", fake_rulesets)
 
 
