@@ -892,32 +892,22 @@ async def _own_workflow_check_suite_ids(owner: str, name: str, sha: str) -> set[
     }
 
 
-async def _own_reusable_job_prefixes(owner: str, name: str, ref: str) -> set[str]:
-    """Job keys / names of jobs in the repo's own `.github/workflows/*.yml`
-    that call a reusable workflow via `uses:`.
-
-    A caller job `hk` that does `uses: hugoh/gh-workflows/.github/workflows/hk.yml`
-    surfaces on a PR as a check named `hk / <reusable job>` (e.g. `hk / lint`).
-    GitHub attributes that check-run's check-suite inconsistently -- sometimes to
-    the caller run under `.github/workflows/`, sometimes to a child run whose
-    path points at the reusable workflow's own repo -- so `_check_run_contexts`
-    also accepts a check as "the repo's own" when its first `" / "`-segment is
-    one of these prefixes.
-    """
+async def _workflow_docs(owner: str, name: str, ref: str) -> list[dict]:
+    """Parsed `.github/workflows/*.y(a)ml` documents at `ref`."""
     listing = await api_raw(
         "GET",
         f"/repos/{owner}/{name}/contents/.github/workflows",
         params={"ref": ref},
     )
     if listing.status_code == 404:
-        return set()
+        return []
     if not listing.is_success:
         raise GhError(error_message(listing), status_code=listing.status_code)
     entries = listing.json()
     if not isinstance(entries, list):
-        return set()
+        return []
 
-    prefixes: set[str] = set()
+    docs: list[dict] = []
     for entry in entries:
         filename = entry.get("name", "")
         if entry.get("type") != "file" or not filename.endswith((".yml", ".yaml")):
@@ -932,12 +922,56 @@ async def _own_reusable_job_prefixes(owner: str, name: str, ref: str) -> set[str
             doc = yaml.safe_load(content) or {}
         except (ValueError, yaml.YAMLError):
             continue
+        if isinstance(doc, dict):
+            docs.append(doc)
+    return docs
+
+
+async def _own_reusable_job_prefixes(owner: str, name: str, ref: str) -> set[str]:
+    """Job keys / names of jobs in the repo's own `.github/workflows/*.yml`
+    that call a reusable workflow via `uses:`.
+
+    A caller job `hk` that does `uses: hugoh/gh-workflows/.github/workflows/hk.yml`
+    surfaces on a PR as a check named `hk / <reusable job>` (e.g. `hk / lint`).
+    GitHub attributes that check-run's check-suite inconsistently -- sometimes to
+    the caller run under `.github/workflows/`, sometimes to a child run whose
+    path points at the reusable workflow's own repo -- so `_check_run_contexts`
+    also accepts a check as "the repo's own" when its first `" / "`-segment is
+    one of these prefixes.
+    """
+    prefixes: set[str] = set()
+    for doc in await _workflow_docs(owner, name, ref):
         for key, job in (doc.get("jobs") or {}).items():
             if isinstance(job, dict) and isinstance(job.get("uses"), str):
                 prefixes.add(key)
                 if isinstance(job.get("name"), str):
                     prefixes.add(job["name"])
     return prefixes
+
+
+_GATE_JOB = re.compile(r"(^|-)gate$")
+_MATRIX_SUFFIX = re.compile(r" \(.+\)$")
+
+
+async def _gate_covered_jobs(owner: str, name: str, ref: str) -> set[str]:
+    """Names (matrix suffix stripped) of jobs a `*-gate` job lists in `needs:`.
+
+    The gate is the stable required check; the jobs it aggregates, like
+    `anodizer (ubuntu-latest)` and `changes` behind `cross-gate`, are not.
+    """
+    covered: set[str] = set()
+    for doc in await _workflow_docs(owner, name, ref):
+        jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+        for key, job in jobs.items():
+            if not _GATE_JOB.search(key):
+                continue
+            needs = job.get("needs") or []
+            for need in [needs] if isinstance(needs, str) else needs:
+                label = jobs.get(need, {}).get("name")
+                covered.add(
+                    _MATRIX_SUFFIX.sub("", label if isinstance(label, str) else need)
+                )
+    return covered
 
 
 def _own_reusable_check(name: str, own_reusable_job_prefixes: set[str]) -> bool:
@@ -952,6 +986,8 @@ async def _check_run_contexts(
     name: str,
     shas: list[str],
     own_reusable_job_prefixes: set[str] | None = None,
+    gate_covered_jobs: set[str] | None = None,
+    push_only_jobs: set[str] | None = None,
 ) -> list[str]:
     """Contexts to require, sampled from the most recent PR's head commit.
 
@@ -967,6 +1003,7 @@ async def _check_run_contexts(
     short recent-PR window.
     """
     own_reusable_job_prefixes = own_reusable_job_prefixes or set()
+    shas = await _settled_first(owner, name, shas)
     latest_runs = await _github_actions_check_runs(owner, name, shas[0])
     own_suites = await _own_workflow_check_suite_ids(owner, name, shas[0])
     latest_runs = [
@@ -982,7 +1019,7 @@ async def _check_run_contexts(
         if run["conclusion"] == "skipped" and " / " not in run["name"]
     }
     if not suspect:
-        return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
+        return _finalize_contexts(contexts, gate_covered_jobs, push_only_jobs)
 
     for sha in shas[1:]:
         if not suspect:
@@ -996,7 +1033,81 @@ async def _check_run_contexts(
                 contexts.add(run["name"])
                 suspect.discard(base)
 
-    return sorted(_drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts)))
+    return _finalize_contexts(contexts, gate_covered_jobs, push_only_jobs)
+
+
+def _job_label(key: str, job: dict) -> str:
+    label = job.get("name")
+    return _MATRIX_SUFFIX.sub("", label if isinstance(label, str) else key)
+
+
+async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
+    """Names of jobs that never run on a pull request.
+
+    A job whose `if` selects push/dispatch events without mentioning
+    `pull_request`, plus anything that `needs:` such a job. Their checks show
+    up skipped on a PR head and must not become required.
+    """
+    out: set[str] = set()
+    for doc in await _workflow_docs(owner, name, ref):
+        jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+        skipped = {
+            k
+            for k, job in jobs.items()
+            if isinstance(job.get("if"), str)
+            and re.search(r"event_name\s*==\s*'(push|workflow_dispatch)'", job["if"])
+            and "pull_request" not in job["if"]
+        }
+        while True:
+            more = {
+                k
+                for k, job in jobs.items()
+                if k not in skipped
+                and skipped
+                & set(
+                    [job["needs"]]
+                    if isinstance(job.get("needs"), str)
+                    else job.get("needs") or []
+                )
+            }
+            if not more:
+                break
+            skipped |= more
+        out |= {_job_label(k, jobs[k]) for k in skipped}
+    return out
+
+
+def _finalize_contexts(
+    contexts: set[str],
+    gate_covered_jobs: set[str] | None,
+    push_only_jobs: set[str] | None,
+) -> list[str]:
+    contexts = _drop_shadowed_by_wrapper_gate(_collapse_matrix_legs(contexts))
+    contexts = {
+        name
+        for name in contexts
+        if _MATRIX_SUFFIX.sub("", name) not in (push_only_jobs or set())
+    }
+    if any(_GATE_JOB.search(name) for name in contexts):
+        contexts = {
+            name
+            for name in contexts
+            if _MATRIX_SUFFIX.sub("", name) not in (gate_covered_jobs or set())
+        }
+    return sorted(contexts)
+
+
+async def _settled_first(owner: str, name: str, shas: list[str]) -> list[str]:
+    """Move the first sha with no in-progress runs to the front.
+
+    A head sampled mid-run lacks wrapper gates (`cross-gate` posts only once
+    its `needs` finish). Falls back to the given order if every sha is running.
+    """
+    for i, sha in enumerate(shas):
+        runs = await _github_actions_check_runs(owner, name, sha)
+        if all(run["conclusion"] is not None for run in runs):
+            return [sha, *shas[:i], *shas[i + 1 :]]
+    return shas
 
 
 _MATRIX_LEG = re.compile(r"^(?P<prefix>.*?(?: / )?)(?P<job>[^/]+) \(.+\)$")
@@ -1452,7 +1563,12 @@ def make_branch_protection_worker(
         contexts: list[str] = []
         if pr_head_shas:
             contexts = await _check_run_contexts(
-                owner, repo.name, pr_head_shas, own_reusable_job_prefixes
+                owner,
+                repo.name,
+                pr_head_shas,
+                own_reusable_job_prefixes,
+                await _gate_covered_jobs(owner, repo.name, repo.default_branch),
+                await _push_only_jobs(owner, repo.name, repo.default_branch),
             )
 
         protection_response = await api_raw(
