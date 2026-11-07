@@ -33,7 +33,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-cov>=7"]
 [build-system]
 # setuptools-scm pinned <9: see the note in asyncgh/pyproject.toml (hatch-vcs 0.4.x
 # is not yet compatible with setuptools-scm 10's config surface).
-requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=8,<9"]
+requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=10,<11"]
 build-backend = "hatchling.build"
 
 [tool.coverage.run]
