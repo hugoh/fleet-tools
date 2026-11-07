@@ -1058,6 +1058,10 @@ async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
                     "build": {"name": "build (${{ matrix.os }})", "needs": "tag"},
                     "release": {"needs": ["tag", "build"]},
                     "mixed": {"if": "github.event_name == 'pull_request' || push"},
+                    "filtered": {
+                        "if": "needs.changes.outputs.links == 'true' || github.event_name == 'workflow_dispatch'"
+                    },
+                    "filtered-gate": {"needs": ["filtered"]},
                 }
             }
         ]
@@ -1068,6 +1072,61 @@ async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
         "build",
         "release",
     }
+
+
+async def test_push_only_jobs_keeps_job_conditioned_on_needs_outputs(monkeypatch):
+    async def fake_docs(owner, name, ref):
+        return [
+            {
+                "jobs": {
+                    "lychee": {
+                        "needs": ["changes"],
+                        "if": "needs.changes.outputs.links == 'true' || github.event_name == 'workflow_dispatch'",
+                    }
+                }
+            }
+        ]
+
+    monkeypatch.setattr(repo_admin, "_workflow_docs", fake_docs)
+    assert await repo_admin._push_only_jobs("o", "r", "main") == set()
+
+
+async def test_path_filtered_gate_workflow_requires_only_the_gate(monkeypatch):
+    async def fake_docs(owner, name, ref):
+        return [
+            {
+                "jobs": {
+                    "changes": {},
+                    "lychee": {
+                        "needs": ["changes"],
+                        "if": "needs.changes.outputs.links == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
+                    },
+                    "lychee-gate": {"if": "always()", "needs": ["changes", "lychee"]},
+                }
+            }
+        ]
+
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response(
+            [
+                _run("lychee-gate", "success"),
+                _run("lychee", "skipped"),
+                _run("changes", "success"),
+                _run("hk / lint", "success"),
+            ]
+        )
+
+    monkeypatch.setattr(repo_admin, "_workflow_docs", fake_docs)
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    _patch_own_suites(monkeypatch, [1])
+    contexts = await repo_admin._check_run_contexts(
+        "hugoh",
+        "repo",
+        ["sha"],
+        gate_covered_jobs=await repo_admin._gate_covered_jobs("o", "r", "main"),
+        push_only_jobs=await repo_admin._push_only_jobs("o", "r", "main"),
+    )
+    assert contexts == ["hk / lint", "lychee-gate"]
 
 
 async def test_check_run_contexts_keeps_matrix_legs_without_gate(monkeypatch):
