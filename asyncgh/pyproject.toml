@@ -43,7 +43,7 @@ dev = [
 # still forwards raw-options as get_version() kwargs, so under v10 `tag` errors
 # and the deprecated `git_describe_command` --match is ignored (wrong tag picked).
 # Unpin once hatch-vcs ships setuptools-scm 10 support.
-requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm>=10,<11"]
+requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm<9"]
 build-backend = "hatchling.build"
 
 [tool.coverage.run]

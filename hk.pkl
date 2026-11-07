@@ -35,6 +35,10 @@ local linters = new Mapping<String, Step> {
         profiles = List("ci")
         depends = List("uv-sync")
     }
+    ["version-tagging"] {
+        check = "uv run --with pytest pytest tests"
+        profiles = List("ci")
+    }
     ["ty"] {
         depends = List("uv-sync")
     }
