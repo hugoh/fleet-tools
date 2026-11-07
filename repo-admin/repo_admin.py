@@ -1057,6 +1057,7 @@ async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
             if isinstance(job.get("if"), str)
             and re.search(r"event_name\s*==\s*'(push|workflow_dispatch)'", job["if"])
             and "pull_request" not in job["if"]
+            and "needs." not in job["if"]
         }
         while True:
             more = {
