@@ -1054,7 +1054,9 @@ async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
             {
                 "jobs": {
                     "test": {},
-                    "tag": {"if": "github.event_name == 'push' || x"},
+                    "tag": {
+                        "if": "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+                    },
                     "build": {"name": "build (${{ matrix.os }})", "needs": "tag"},
                     "release": {"needs": ["tag", "build"]},
                     "mixed": {"if": "github.event_name == 'pull_request' || push"},
@@ -1072,6 +1074,24 @@ async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
         "build",
         "release",
     }
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("github.event_name == 'push'", True),
+        ("${{ github.event_name == 'push' }}", True),
+        ("event_name == 'schedule' || github.event_name == 'workflow_dispatch'", True),
+        ("github.event_name == 'push' && needs.a.result == 'success'", True),
+        ("github.event_name == 'push' || x", False),
+        ("needs.a.outputs.b == 'true' || github.event_name == 'push'", False),
+        ("github.event_name == 'pull_request' || github.event_name == 'push'", False),
+        ("(github.event_name == 'push')", False),
+        ("always()", False),
+    ],
+)
+def test_never_runs_on_pull_request(condition, expected):
+    assert repo_admin._never_runs_on_pull_request(condition) is expected
 
 
 async def test_push_only_jobs_keeps_job_conditioned_on_needs_outputs(monkeypatch):

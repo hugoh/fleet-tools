@@ -1041,6 +1041,24 @@ def _job_label(key: str, job: dict) -> str:
     return _MATRIX_SUFFIX.sub("", label if isinstance(label, str) else key)
 
 
+_NON_PR_EVENT = re.compile(
+    r"(github\.)?event_name\s*==\s*'(push|workflow_dispatch|schedule)'"
+)
+
+
+def _never_runs_on_pull_request(condition: str) -> bool:
+    """True only when every `||` branch has a `&&` term pinning a non-PR event.
+
+    Anything else (needs.* outputs, parentheses, functions) is assumed able to
+    run on a PR.
+    """
+    expr = condition.strip().removeprefix("${{").removesuffix("}}")
+    return all(
+        any(_NON_PR_EVENT.fullmatch(term.strip()) for term in branch.split("&&"))
+        for branch in expr.split("||")
+    )
+
+
 async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
     """Names of jobs that never run on a pull request.
 
@@ -1054,10 +1072,7 @@ async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
         skipped = {
             k
             for k, job in jobs.items()
-            if isinstance(job.get("if"), str)
-            and re.search(r"event_name\s*==\s*'(push|workflow_dispatch)'", job["if"])
-            and "pull_request" not in job["if"]
-            and "needs." not in job["if"]
+            if isinstance(job.get("if"), str) and _never_runs_on_pull_request(job["if"])
         }
         while True:
             more = {
