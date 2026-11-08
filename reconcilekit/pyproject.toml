@@ -31,8 +31,7 @@ Repository = "https://github.com/hugoh/fleet-tools"
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-cov>=7"]
 
 [build-system]
-# setuptools-scm pinned <9: see the note in asyncgh/pyproject.toml (hatch-vcs 0.4.x
-# is not yet compatible with setuptools-scm 10's config surface).
+# setuptools-scm cap <11: see the note in asyncgh/pyproject.toml.
 requires = ["hatch-vcs>=0.5", "hatchling", "setuptools-scm<11"]
 build-backend = "hatchling.build"
 

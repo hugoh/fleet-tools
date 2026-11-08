@@ -38,11 +38,13 @@ dev = [
 ]
 
 [build-system]
-# setuptools-scm pinned <9: v10 moved its engine to vcs-versioning and put
-# per-package tag filtering in a [tool.setuptools_scm.tag] table. hatch-vcs 0.4.x
-# still forwards raw-options as get_version() kwargs, so under v10 `tag` errors
-# and the deprecated `git_describe_command` --match is ignored (wrong tag picked).
-# Unpin once hatch-vcs ships setuptools-scm 10 support.
+# setuptools-scm is capped at <11. Early v10 releases moved the engine to
+# vcs-versioning, and hatch-vcs forwarded raw-options as get_version() kwargs, so
+# `git_describe_command --match` was ignored and a sibling package's newer tag
+# was picked (reconcilekit built against the asyncgh tag). That no longer
+# reproduces with setuptools-scm 10.3.4 (hatch-vcs 0.4 or 0.5);
+# tests/test_version_tagging.py guards this behaviour and fails the build if it
+# regresses.
 requires = ["hatch-vcs>=0.5", "hatchling", "setuptools-scm<11"]
 build-backend = "hatchling.build"
 
