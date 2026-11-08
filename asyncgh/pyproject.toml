@@ -38,12 +38,7 @@ dev = [
 ]
 
 [build-system]
-# setuptools-scm pinned <9: v10 moved its engine to vcs-versioning and put
-# per-package tag filtering in a [tool.setuptools_scm.tag] table. hatch-vcs 0.4.x
-# still forwards raw-options as get_version() kwargs, so under v10 `tag` errors
-# and the deprecated `git_describe_command` --match is ignored (wrong tag picked).
-# Unpin once hatch-vcs ships setuptools-scm 10 support.
-requires = ["hatch-vcs>=0.4", "hatchling", "setuptools-scm<11"]
+requires = ["hatch-vcs>=0.5", "hatchling", "setuptools-scm<11"]
 build-backend = "hatchling.build"
 
 [tool.coverage.run]
