@@ -167,18 +167,21 @@ def render_table(title: str, rows: list[dict], limit: int) -> Table:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "-w",
         "--window-months",
         type=int,
         default=12,
         help="how far back to fetch commits, in months (default 12)",
     )
     parser.add_argument(
+        "-H",
         "--half-life-days",
         type=float,
         default=30,
         help="decay half-life for the ranking score, in days (default 30)",
     )
     parser.add_argument(
+        "-l",
         "--limit",
         type=int,
         default=20,

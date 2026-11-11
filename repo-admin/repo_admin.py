@@ -2895,15 +2895,19 @@ def build_parser() -> argparse.ArgumentParser:
     repo_scope.add_argument(
         "repos", nargs="*", metavar="REPO", help="repo names to target (default: all)"
     )
-    repo_scope.add_argument("--skip", help="comma-separated repo names to exclude")
+    repo_scope.add_argument(
+        "-s", "--skip", help="comma-separated repo names to exclude"
+    )
 
     mutating = argparse.ArgumentParser(add_help=False, parents=[repo_scope])
     mutating.add_argument(
+        "-n",
         "--dry-run",
         action="store_true",
         help="show what would change, without changing anything",
     )
     mutating.add_argument(
+        "-v",
         "--verbose",
         action="store_true",
         help="show unchanged repos too, not just changes",
@@ -2928,6 +2932,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sync", parents=[mutating]
     )
     protection_sync.add_argument(
+        "-c",
         "--clear-stale-checks",
         action="store_true",
         help=(
@@ -2936,6 +2941,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     protection_sync.add_argument(
+        "-a",
         "--adopt-renamed-checks",
         action="store_true",
         help=(
@@ -2958,6 +2964,7 @@ def build_parser() -> argparse.ArgumentParser:
     pages.add_parser("status", parents=[repo_scope]).set_defaults(func=cmd_pages_status)
     pages_sync = pages.add_parser("sync", parents=[mutating])
     pages_sync.add_argument(
+        "-e",
         "--enable",
         action="store_true",
         help=(
@@ -2972,13 +2979,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pages_config_parser = pages.add_parser("config", parents=[repo_scope])
     pages_config_parser.add_argument(
-        "--domain", required=True, help="base domain, e.g. larve.net"
+        "-d", "--domain", required=True, help="base domain, e.g. larve.net"
     )
     pages_config_parser.set_defaults(func=cmd_pages_config)
 
     secrets = resource_verbs("secrets")
     secrets_sync_parser = secrets.add_parser("sync", parents=[mutating])
     secrets_sync_parser.add_argument(
+        "-S",
         "--secret",
         help="comma-separated secret names to sync (default: all in "
         "config/secrets.enc.yaml)",
@@ -2989,6 +2997,7 @@ def build_parser() -> argparse.ArgumentParser:
     variables = resource_verbs("variables")
     variables_sync_parser = variables.add_parser("sync", parents=[mutating])
     variables_sync_parser.add_argument(
+        "-V",
         "--variable",
         help="comma-separated variable names to sync (default: all in "
         "config/variables.yaml)",
@@ -3006,18 +3015,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     activity_parser = resources.add_parser("activity")
     activity_parser.add_argument(
+        "-w",
         "--window-months",
         type=int,
         default=12,
         help="how far back to fetch commits, in months (default 12)",
     )
     activity_parser.add_argument(
+        "-H",
         "--half-life-days",
         type=float,
         default=30,
         help="decay half-life for the ranking score, in days (default 30)",
     )
     activity_parser.add_argument(
+        "-l",
         "--limit",
         type=int,
         default=20,
