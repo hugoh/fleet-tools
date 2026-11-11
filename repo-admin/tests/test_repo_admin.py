@@ -2543,6 +2543,19 @@ def test_sync_subcommand_is_registered_in_parser():
     assert args.dry_run is True
 
 
+def test_short_flags_match_long_flags():
+    parse = repo_admin.build_parser().parse_args
+    a = parse(["protection", "sync", "-n", "-v", "-s", "x", "-c", "-a"])
+    assert (a.dry_run, a.verbose, a.skip) == (True, True, "x")
+    assert a.clear_stale_checks and a.adopt_renamed_checks
+    assert parse(["pages", "sync", "-e"]).enable is True
+    assert parse(["pages", "config", "-d", "larve.net"]).domain == "larve.net"
+    assert parse(["secrets", "sync", "-S", "a"]).secret == "a"
+    assert parse(["variables", "sync", "-V", "a"]).variable == "a"
+    b = parse(["activity", "-w", "3", "-H", "7", "-l", "5"])
+    assert (b.window_months, b.half_life_days, b.limit) == (3, 7, 5)
+
+
 # ---------------------------------------------------------------------------
 # pages sync
 # ---------------------------------------------------------------------------
