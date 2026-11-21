@@ -28,7 +28,7 @@ Run from `fleet-tools/`:
 | File | Purpose | Notes |
 |---|---|---|
 | `.github/workflows/hk.yml` | lint / conventional-commit check | thin caller of `hugoh/gh-workflows/.github/workflows/hk.yml` (inputs: `pre-hk`, `apt-packages`, `fetch-depth`) |
-| `.github/workflows/release.yml` | tag + GitHub release | thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`hugoh/cog-bump` + `gh release create`); **omit** if the repo isn't released |
+| `.github/workflows/release.yml` | tag + GitHub release | thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`hugoh/cog-bump` + `gh release create`); with `--pypi`, also a `publish-pypi` job (trusted publishing, see below); **omit** if the repo isn't released |
 | `.github/workflows/rerun-transient-failures.yml` | retry transient CI failures | optional; `workflow_run` trigger → [`hugoh/rerun-transient-failures`](https://github.com/hugoh/rerun-transient-failures) |
 | `.renovaterc.json` | dependency updates | `{"extends": ["github>hugoh/renovate-config"]}` — nothing else unless the repo needs an override |
 | `hk.pkl` | lint ruleset | `amends "package://github.com/hugoh/hk-config/..."` |
@@ -114,10 +114,25 @@ gh repo create hugoh/my-new-repo --private --source ../my-new-repo --push
 ./repo-admin.sh sync my-new-repo     # merge / protection / security
 ```
 
-Flags: `--release`, `--pages`, `--action` (Marketplace/action repo — adds
-`action.yml` + major-tag move), `--rerun-transient`, `--tests {none,python}`,
-`--shell`, `--apt-packages`, `--pre-hk`, `--default-branch`. `--dry-run` to
-preview. Templates live in [`../repo-admin/templates/`](../repo-admin/templates/).
+Flags: `--release`, `--pypi` (implies `--release`; PyPI publish job +
+`package-check`), `--pypi-publish-ref`, `--pages`, `--action`
+(Marketplace/action repo — adds `action.yml` + major-tag move),
+`--rerun-transient`, `--tests {none,python}`, `--shell`, `--apt-packages`,
+`--pre-hk`, `--default-branch`. `--dry-run` to preview. Templates live in
+[`../repo-admin/templates/`](../repo-admin/templates/).
+
+### Publishing to PyPI
+
+`--pypi` adds a `publish-pypi` job to `release.yml` (runs after the tag is cut,
+with only `id-token: write`, in the `pypi` environment; `skip-existing` makes a
+re-run safe) and a `package-check` mise task that hk runs in CI: it builds the
+sdist and wheel, runs `twine check --strict` and installs the wheel in a clean
+env. One-time manual setup, before the first release:
+
+1. On PyPI, add a (pending) trusted publisher for the repo, workflow
+   `release.yml`, environment `pypi`.
+2. In the GitHub repo, create the environment `pypi`, ideally with required
+   reviewers.
 
 An ongoing `repo-admin files sync` (reconcile existing repos against the
 templates, like `pages sync`) is still planned; for now a re-scaffold with

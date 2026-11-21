@@ -15,6 +15,12 @@ local linters = new Mapping<String, Step> {
         profiles = List("ci")
     }
 <% endif %>
+<% if pypi %>
+    ["package-check"] {
+        check = "mise run package-check"
+        profiles = List("ci")
+    }
+<% endif %>
 }
 
 hooks {

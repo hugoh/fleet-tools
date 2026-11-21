@@ -9,10 +9,11 @@ Idempotent: an existing directory is fine, existing files are left alone
 (``--force`` to overwrite), and an existing git/jj repo is not re-initialised.
 
 Usage:
-  repo_admin.py repo scaffold PATH [--name N] [--release] [--pages] [--action]
+  repo_admin.py repo scaffold PATH [--name N] [--release] [--pypi] [--pages] [--action]
       [--rerun-transient] [--tests {none,python}] [--shell]
       [--apt-packages "pkg ..."] [--pre-hk CMD] [--default-branch B]
-      [--gh-workflows-ref REF] [--rerun-transient-ref REF] [--pages-dir DIR]
+      [--gh-workflows-ref REF] [--pypi-publish-ref REF]
+      [--rerun-transient-ref REF] [--pages-dir DIR]
       [--pages-build-cmd CMD] [--watch-workflows "[CI, hk]"]
       [--force] [--no-pin] [--dry-run]
 """
@@ -51,6 +52,7 @@ BASE_TOOLS = (
 )
 SHELL_TOOLS = ("shellcheck", "shfmt", "aqua:anordal/shellharden")
 PYTHON_TOOLS = ("ruff", "ty")
+PYPI_TOOLS = ("pipx:twine",)
 
 
 def _canonical_tools() -> dict[str, str]:
@@ -68,13 +70,15 @@ def _canonical_hk_versions() -> tuple[str, str]:
 
 
 def _tools_block(
-    tools: dict[str, str], groups: list[str], *, python_extra: bool
+    tools: dict[str, str], groups: list[str], *, python_extra: bool, pypi: bool
 ) -> str:
     wanted = list(BASE_TOOLS)
     if "shell" in groups:
         wanted += SHELL_TOOLS
     if "python" in groups or python_extra:
         wanted += PYTHON_TOOLS
+    if pypi:
+        wanted += PYPI_TOOLS
     lines = []
     for key in wanted:
         if key not in tools:
@@ -172,11 +176,19 @@ def _context(args: argparse.Namespace, name: str) -> dict[str, object]:
         hk_groups.append("python")
     hk_version, hk_config_version = _canonical_hk_versions()
     tools = _canonical_tools()
-    tools_block = _tools_block(tools, hk_groups, python_extra=args.tests == "python")
+    tools_block = _tools_block(
+        tools, hk_groups, python_extra=args.tests == "python", pypi=bool(args.pypi)
+    )
     return {
         "repo_name": name,
         "default_branch": args.default_branch,
         "gh_workflows_ref": _resolve_ref("hugoh/gh-workflows", args.gh_workflows_ref),
+        "pypi": bool(args.pypi),
+        "pypi_publish_ref": (
+            _resolve_ref("pypa/gh-action-pypi-publish", args.pypi_publish_ref)
+            if args.pypi
+            else ""
+        ),
         "rerun_transient_ref": (
             _resolve_ref("hugoh/rerun-transient-failures", args.rerun_transient_ref)
             if args.rerun_transient
@@ -280,6 +292,8 @@ def _pin_actions(target: Path, *, dry_run: bool, no_pin: bool) -> str:
 
 
 async def run(args: argparse.Namespace) -> int:
+    if args.pypi:
+        args.release = True
     target = Path(args.path).expanduser().resolve()
     name = args.name or target.name
     target.mkdir(parents=True, exist_ok=True)
@@ -322,6 +336,16 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("path", help="target directory (created if missing)")
     p.add_argument("--name", help="repo name (default: basename of PATH)")
     p.add_argument("--release", action="store_true", help="add release.yml")
+    p.add_argument(
+        "--pypi",
+        action="store_true",
+        help="add a PyPI trusted-publishing job to release.yml and a "
+        "package-check task (implies --release)",
+    )
+    p.add_argument(
+        "--pypi-publish-ref",
+        help="pin for pypa/gh-action-pypi-publish (default: latest release)",
+    )
     p.add_argument("--pages", action="store_true", help="add pages.yml")
     p.add_argument(
         "--action",

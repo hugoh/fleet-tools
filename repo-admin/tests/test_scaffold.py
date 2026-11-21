@@ -11,6 +11,8 @@ def _args(path: Path, **overrides: object) -> argparse.Namespace:
         "path": str(path),
         "name": None,
         "release": False,
+        "pypi": False,
+        "pypi_publish_ref": "abc1234 # v1.99.0",
         "pages": False,
         "action": False,
         "rerun_transient": False,
@@ -82,6 +84,7 @@ async def test_no_template_markers_leak(tmp_path: Path) -> None:
     await _run(
         target,
         release=True,
+        pypi=True,
         pages=True,
         action=True,
         rerun_transient=True,
@@ -130,6 +133,66 @@ async def test_action_flag_adds_renovate_rule_and_major_tag(tmp_path: Path) -> N
     )
     assert "major-tag: true" in (target / ".github/workflows/release.yml").read_text()
     assert (target / "action.yml").is_file()
+
+
+async def test_pypi_implies_release_and_adds_a_trusted_publish_job(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "widget"
+    await _run(target, pypi=True)
+    release = (target / ".github/workflows/release.yml").read_text()
+    assert "  publish-pypi:" in release
+    assert "needs: release" in release
+    assert "needs.release.outputs.tag != ''" in release
+    assert "environment: pypi" in release
+    assert "ref: ${{ needs.release.outputs.tag }}" in release
+    assert "fetch-depth: 0" in release
+    assert "run: uv build" in release
+    assert "pypa/gh-action-pypi-publish@abc1234 # v1.99.0" in release
+    assert "skip-existing: true" in release
+
+
+async def test_publish_job_has_only_the_oidc_permission(tmp_path: Path) -> None:
+    yaml = pytest.importorskip("yaml")
+    target = tmp_path / "widget"
+    await _run(target, pypi=True)
+    workflow = yaml.safe_load((target / ".github/workflows/release.yml").read_text())
+    assert workflow["permissions"] == {}
+    assert workflow["jobs"]["release"]["permissions"] == {"contents": "write"}
+    assert workflow["jobs"]["publish-pypi"]["permissions"] == {"id-token": "write"}
+
+
+async def test_release_without_pypi_publishes_nothing(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, release=True)
+    release = (target / ".github/workflows/release.yml").read_text()
+    assert "publish-pypi" not in release
+    assert "pypi" not in (target / "mise.toml").read_text()
+    assert "package-check" not in (target / "hk.pkl").read_text()
+
+
+async def test_pypi_adds_a_packaging_check(tmp_path: Path) -> None:
+    canonical = scaffold._canonical_tools()
+    target = tmp_path / "widget"
+    await _run(target, pypi=True)
+    mise = (target / "mise.toml").read_text()
+    assert f'"pipx:twine" = "{canonical["pipx:twine"]}"' in mise
+    assert "[tasks.package-check]" in mise
+    assert "uv build --out-dir dist" in mise
+    assert "twine check --strict dist/*" in mise
+    assert "m.version('widget')" in mise
+    hk = (target / "hk.pkl").read_text()
+    assert '"package-check"' in hk or "mise run package-check" in hk
+    assert 'List("ci")' in hk
+
+
+async def test_the_packaging_check_is_independent_of_the_test_flavour(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "widget"
+    await _run(target, pypi=True, tests="python")
+    assert "[tasks.package-check]" in (target / "mise.toml").read_text()
+    assert "[tasks.test]" in (target / "mise.toml").read_text()
 
 
 async def test_idempotent_keeps_existing_files(tmp_path: Path) -> None:
@@ -181,7 +244,7 @@ async def test_default_branch_flows_into_workflows(tmp_path: Path) -> None:
 async def test_rendered_workflows_are_valid_yaml(tmp_path: Path) -> None:
     yaml = pytest.importorskip("yaml")
     target = tmp_path / "widget"
-    await _run(target, release=True, pages=True, rerun_transient=True)
+    await _run(target, pypi=True, pages=True, rerun_transient=True)
     for wf in (target / ".github/workflows").glob("*.yml"):
         yaml.safe_load(wf.read_text())
 
@@ -193,7 +256,14 @@ def test_scaffolded_repo_passes_jactionlint(tmp_path: Path) -> None:
 
     target = tmp_path / "widget"
     asyncio.run(
-        _run(target, release=True, pages=True, rerun_transient=True, action=True)
+        _run(
+            target,
+            release=True,
+            pypi=True,
+            pages=True,
+            rerun_transient=True,
+            action=True,
+        )
     )
     proc = subprocess.run(
         [
