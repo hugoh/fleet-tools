@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
-from asyncgh import GhError, aclose_client, fetch_repos
+from asyncgh import GhError, GhRateLimitError, aclose_client, fetch_repos
 from reconcilekit import Status
 from reconcilekit import run_parallel as _run_parallel
 
@@ -128,7 +128,10 @@ def run_cli(
         return 1
 
 
-# reconcilekit.run_parallel with GhError bound as the failure exception type.
+# reconcilekit.run_parallel with GhError bound as the failure exception type
+# and an exhausted rate limit as the run-stopping one.
 # See reconcilekit.kernel for the concurrency, failure-isolation, and
 # quiet-suppression behaviour.
-run_parallel = functools.partial(_run_parallel, error_cls=GhError, jobs=DEFAULT_JOBS)
+run_parallel = functools.partial(
+    _run_parallel, error_cls=GhError, fatal=GhRateLimitError, jobs=DEFAULT_JOBS
+)

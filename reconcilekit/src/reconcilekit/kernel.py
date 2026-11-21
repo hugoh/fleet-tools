@@ -88,6 +88,7 @@ async def run_parallel(
     verbose: bool = False,
     dry_run: bool = False,
     error_cls: type[Exception] = ReconcileError,
+    fatal: type[Exception] | tuple[type[Exception], ...] = (),
 ) -> list[R]:
     """Runs worker(target) for each target concurrently (bounded by a semaphore
     -- these are I/O-bound calls, not CPU-bound work), printing each result's
@@ -111,11 +112,17 @@ async def run_parallel(
     tallied on their own line too -- "N changed", or "N would change" when
     `dry_run=True`.
 
-    `jobs`/`verbose`/`dry_run`/`error_cls` are keyword-only so a bare
+    A `fatal` exception (e.g. an exhausted API rate limit, which every
+    remaining target would hit too) stops the run instead: targets not yet
+    started are skipped, and the first fatal exception is re-raised as-is,
+    once, rather than as one failure line per target.
+
+    `jobs`/`verbose`/`dry_run`/`error_cls`/`fatal` are keyword-only so a bare
     positional bool at a call site can't be misread as one or the other.
     """
     results: list[R] = []
     failed_names: list[str] = []
+    fatal_errors: list[Exception] = []
     unchanged_count = 0
     active: set[str] = set()
     sem = asyncio.Semaphore(jobs)
@@ -128,10 +135,14 @@ async def run_parallel(
         async def call(target: Target) -> None:
             nonlocal unchanged_count
             async with sem:
+                if fatal_errors:
+                    return
                 active.add(target.name)
                 progress.update(task, description=progress_description(active))
                 try:
                     result = await worker(target)
+                except fatal as exc:
+                    fatal_errors.append(exc)
                 except Exception as exc:  # noqa: BLE001 -- collected below, not swallowed
                     failed_names.append(target.name)
                     print_status(Status.FAILED, f"{target.name}: {exc}")
@@ -149,6 +160,9 @@ async def run_parallel(
         async with asyncio.TaskGroup() as tg:
             for target in targets:
                 tg.create_task(call(target))
+
+    if fatal_errors:
+        raise fatal_errors[0]
 
     changed = sum(1 for r in results if r.status not in QUIET_STATUSES)
     if changed:
