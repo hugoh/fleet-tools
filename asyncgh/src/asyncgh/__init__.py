@@ -15,6 +15,7 @@ from __future__ import annotations
 from .client import (
     API_BASE,
     GhError,
+    GhRateLimitError,
     GitHubClient,
     aclose_client,
     api_json,
@@ -36,6 +37,7 @@ from .endpoints import (
 __all__ = [
     "API_BASE",
     "GhError",
+    "GhRateLimitError",
     "GitHubClient",
     "RepoJSON",
     "aclose_client",

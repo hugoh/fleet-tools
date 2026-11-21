@@ -538,3 +538,38 @@ async def test_graphql_invalid_body_error_includes_status_and_body_prefix(
     assert "status 200" in message
     assert "<html>xxx" in message
     assert "x" * 300 not in message
+
+
+async def test_api_raw_raises_rate_limit_error_when_primary_limit_exhausted(
+    httpx2_mock: respx.Router, monkeypatch
+):
+    monkeypatch.setattr(client.time, "time", lambda: 1_000_000.0)
+    route = httpx2_mock.get(f"{API_BASE}/x").mock(
+        return_value=httpx.Response(
+            403,
+            json={"message": "API rate limit exceeded for user ID 1."},
+            headers={
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(1_000_000 + 1800),
+            },
+        )
+    )
+    with pytest.raises(client.GhRateLimitError) as excinfo:
+        await api_raw("GET", "/x")
+    assert str(excinfo.value) == "GitHub API rate limit exceeded; resets in 30 min"
+    assert excinfo.value.status_code == 403
+    assert route.call_count == 1
+
+
+async def test_api_raw_returns_plain_403_without_exhausted_limit(
+    httpx2_mock: respx.Router,
+):
+    httpx2_mock.get(f"{API_BASE}/x").mock(
+        return_value=httpx.Response(
+            403,
+            json={"message": "Upgrade to GitHub Pro"},
+            headers={"x-ratelimit-remaining": "4000"},
+        )
+    )
+    response = await api_raw("GET", "/x")
+    assert response.status_code == 403
