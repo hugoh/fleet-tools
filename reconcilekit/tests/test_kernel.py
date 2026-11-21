@@ -215,3 +215,21 @@ async def test_run_parallel_hides_limited_unchanged_lines_by_default(capsys):
     out = capsys.readouterr().out
     assert "t-a line" not in out
     assert "1 unchanged" in out
+
+
+class Fatal(RuntimeError):
+    pass
+
+
+async def test_run_parallel_stops_on_fatal_error_and_raises_it_once(capsys):
+    started = []
+
+    async def worker(target):
+        started.append(target.name)
+        raise Fatal("rate limited")
+
+    targets = [Fake(f"t-{i}") for i in range(10)]
+    with pytest.raises(Fatal, match="rate limited"):
+        await run_parallel(targets, worker, jobs=1, fatal=Fatal)
+    assert started == ["t-0"]
+    assert "✗" not in capsys.readouterr().out
