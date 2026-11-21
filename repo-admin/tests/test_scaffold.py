@@ -324,3 +324,28 @@ def test_resolve_ref_falls_back_to_main_when_gh_fails(
 
     monkeypatch.setattr(scaffold.subprocess, "run", boom)
     assert scaffold._resolve_ref("a/b", None) == "main"
+
+
+async def test_python_tests_step_uses_valid_pkl_syntax(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, tests="python")
+    hk_pkl = (target / "hk.pkl").read_text()
+    assert '["tests"] {' in hk_pkl
+    assert '["tests"] = {' not in hk_pkl
+
+
+def test_rendered_hk_pkl_loads(tmp_path: Path) -> None:
+    if not _have("hk"):
+        pytest.skip("hk not on PATH")
+    import asyncio
+
+    target = tmp_path / "widget"
+    asyncio.run(_run(target, release=True, pypi=True, tests="python"))
+    proc = subprocess.run(
+        ["hk", "validate"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
