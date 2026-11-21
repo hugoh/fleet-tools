@@ -10,8 +10,14 @@ local linters = new Mapping<String, Step> {
     ...Base.<< group >>
 <% endfor %>
 <% if tests == "python" %>
-    ["tests"] = {
+    ["tests"] {
         check = "python3 -m unittest discover -p 'test_*.py'"
+        profiles = List("ci")
+    }
+<% endif %>
+<% if pypi %>
+    ["package-check"] {
+        check = "mise run package-check"
         profiles = List("ci")
     }
 <% endif %>

@@ -16,6 +16,7 @@ biome = "2.6.7"
 ruff = "0.17.5"
 ty = "0.0.104"
 sops = "3.13.3"
+"pipx:twine" = "7.0.0"
 
 [tasks.test]
 description = "Run every Python test suite"

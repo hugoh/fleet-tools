@@ -6,3 +6,15 @@
 description = "Run the test suite"
 run = "python3 -m unittest discover -p 'test_*.py'"
 <% endif %>
+<% if pypi %>
+
+[tasks.package-check]
+description = "Build the sdist and wheel, validate the metadata and install the wheel in a clean env"
+run = """
+set -eu
+rm -rf dist
+uv build --out-dir dist
+twine check --strict dist/*
+uv run --isolated --no-project --with dist/*.whl python -c "import importlib.metadata as m; print(m.version('<< repo_name >>'))"
+"""
+<% endif %>

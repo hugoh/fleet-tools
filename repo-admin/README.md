@@ -36,7 +36,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   files from [`templates/`](templates/): the shared dev-tooling
   (`hk.pkl`, `mise.toml`, `.renovaterc.json`, editor/lint config, `LICENSE`)
   plus the workflow callers the feature flags ask for (`--release`,
-  `--pages`, `--action`, `--rerun-transient`), then `jj git init`. One-shot,
+  `--pypi`, `--pages`, `--action`, `--rerun-transient`), then `jj git init`. One-shot,
   not `copier update`: after this Renovate keeps every version line current
   (the repo inherits `github>hugoh/renovate-config`). Tool versions in the
   rendered `mise.toml`/`hk.pkl` are read from **this repo's own**
