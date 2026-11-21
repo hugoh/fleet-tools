@@ -296,7 +296,8 @@ async def run(args: argparse.Namespace) -> int:
         args.release = True
     target = Path(args.path).expanduser().resolve()
     name = args.name or target.name
-    target.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        target.mkdir(parents=True, exist_ok=True)
 
     env = _jinja_env()
     ctx = _context(args, name)

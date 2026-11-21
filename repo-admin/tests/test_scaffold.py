@@ -230,8 +230,18 @@ async def test_existing_git_repo_is_not_reinitialised(tmp_path: Path) -> None:
 
 async def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     target = tmp_path / "widget"
+    assert not target.exists()
     await _run(target, dry_run=True)
-    assert not target.exists() or not any(target.iterdir())
+    assert not target.exists()
+
+
+async def test_dry_run_leaves_existing_directory_untouched(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    target.mkdir()
+    (target / "keep.txt").write_text("mine\n")
+    await _run(target, release=True, dry_run=True)
+    assert sorted(p.name for p in target.iterdir()) == ["keep.txt"]
+    assert (target / "keep.txt").read_text() == "mine\n"
 
 
 async def test_default_branch_flows_into_workflows(tmp_path: Path) -> None:
