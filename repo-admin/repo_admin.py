@@ -81,6 +81,7 @@ import yaml
 from lib import (
     DEFAULT_JOBS,
     GhError,
+    GhRateLimitError,
     Repo,
     RepoResult,
     Status,
@@ -1626,8 +1627,8 @@ async def cmd_sync(args: argparse.Namespace) -> int:
     intended). merge sync's squash-title step is split out to run right
     after protection sync, since it keys off the `semantic-pr` required
     check that protection sync adds. One
-    command failing doesn't stop the others; the exit code is nonzero if
-    any of them failed.
+    command failing doesn't stop the others, except an exhausted rate limit,
+    which would fail them all; the exit code is nonzero if any of them failed.
     """
     failed = False
     for name, cmd in (
@@ -1642,6 +1643,9 @@ async def cmd_sync(args: argparse.Namespace) -> int:
         try:
             if await cmd(args) != 0:
                 failed = True
+        except GhRateLimitError as exc:
+            print(exc, file=sys.stderr)
+            return 1
         except GhError as exc:
             print(exc, file=sys.stderr)
             failed = True
