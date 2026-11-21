@@ -27,6 +27,7 @@ from reconcilekit.render import console
 from asyncgh import (
     API_BASE,
     GhError,
+    GhRateLimitError,
     aclose_client,
     api_json,
     api_raw,
@@ -87,6 +88,7 @@ __all__ = [  # re-exported from asyncgh / reconcilekit / repokit for repo-admin'
     "API_BASE",
     "DEFAULT_JOBS",
     "GhError",
+    "GhRateLimitError",
     "ReconcileError",
     "Repo",
     "RepoResult",

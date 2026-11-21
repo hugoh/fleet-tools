@@ -2322,3 +2322,29 @@ async def test_cmd_protection_sync_lists_repos_needing_manual_attention(
     args = argparse.Namespace(repos=[], skip=None, dry_run=False, verbose=False)
     await repo_admin.cmd_protection_sync(args)
     assert "Needs manual attention: repo" in capsys.readouterr().out
+
+
+async def test_cmd_sync_stops_after_rate_limit_error(monkeypatch, capsys):
+    ran = []
+
+    async def limited(args):
+        ran.append("merge")
+        raise repo_admin.GhRateLimitError("GitHub API rate limit exceeded")
+
+    async def later(args):
+        ran.append("later")
+        return 0
+
+    monkeypatch.setattr(repo_admin, "_merge_settings_sync", limited)
+    for name in (
+        "_features_sync",
+        "cmd_protection_sync",
+        "_squash_title_sync",
+        "cmd_security_sync",
+        "_cmd_pages_sync_mapped_only",
+    ):
+        monkeypatch.setattr(repo_admin, name, later)
+    args = argparse.Namespace()
+    assert await repo_admin.cmd_sync(args) == 1
+    assert ran == ["merge"]
+    assert capsys.readouterr().err.count("rate limit") == 1
