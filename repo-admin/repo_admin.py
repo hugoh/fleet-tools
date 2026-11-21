@@ -706,6 +706,10 @@ async def cmd_security_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tagged(results: list[RepoResult], tag: protection.Tag) -> list[str]:
+    return sorted(r.repo.name for r in results if r.tag == tag)
+
+
 async def cmd_protection_sync(args: argparse.Namespace) -> int:
     owner = await default_owner()
     exclude = default_branch_protection_exclude()
@@ -740,68 +744,25 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             verbose=args.verbose,
             dry_run=args.dry_run,
         )
-    unprotected = sorted(
-        r.repo.name for r in unprotect_results if r.tag == protection.Tag.UNPROTECTED
-    )
 
-    rename_candidates = sorted(
-        r.repo.name for r in results if r.tag == protection.Tag.RENAME_CANDIDATE
-    )
-    applied = [
-        r
-        for r in results
-        if r.tag in (protection.Tag.APPLIED, protection.Tag.RENAME_CANDIDATE)
-    ]
-    applied_no_checks = sorted(
-        r.repo.name for r in results if r.tag == protection.Tag.APPLIED_NO_CHECKS
-    )
-    skipped_no_plan = sorted(
-        r.repo.name for r in results if r.tag == protection.Tag.SKIPPED_NO_PLAN
-    )
-    ruleset_enforced = sorted(
-        r.repo.name
-        for r in results
-        if r.tag in (protection.Tag.APPLIED_RULESET, protection.Tag.APPLIED_BOTH)
-    )
-    needs_attention = sorted(
-        r.repo.name
-        for r in results
-        if r.tag
-        in (
-            protection.Tag.MULTIPLE_RULESETS,
-            protection.Tag.ORG_RULESET,
-            protection.Tag.RULESET_EVALUATE_MODE,
-            protection.Tag.RULESET_NO_CHECKS_RULE,
+    Tag = protection.Tag
+    summary = []
+    if attention := _tagged(results, Tag.ATTENTION):
+        summary.append(f"Needs manual attention: {' '.join(attention)}")
+    if renames := _tagged(results, Tag.RENAME_CANDIDATE):
+        summary.append(f"Candidates for --adopt-renamed-checks: {' '.join(renames)}")
+    if skipped := _tagged(results, Tag.SKIPPED_NO_PLAN):
+        summary.append(
+            f"Skipped (private repo, plan disallows protection): {len(skipped)}"
         )
-    )
-    verb = "Would be" if args.dry_run else "Protected"
-    print()
-    print("Summary:")
-    print(f"  {verb} (with required status checks): {len(applied)}")
-    print(
-        f"  Enforced via a repository ruleset: {' '.join(ruleset_enforced) or 'none'}"
-    )
-    print(
-        "  Needs manual attention (multiple/org/evaluate-mode rulesets): "
-        f"{' '.join(needs_attention) or 'none'}"
-    )
-    print(
-        f"  {verb} (no required status checks yet -- no PRs / no check runs "
-        f"seen): {' '.join(applied_no_checks) or 'none'}"
-    )
-    print(
-        "  Skipped (plan doesn't allow branch protection on private repos): "
-        f"{' '.join(skipped_no_plan) or 'none'}"
-    )
-    print(
-        "  Removed branch protection (branch-protection-exclude.yaml): "
-        f"{' '.join(unprotected) or 'none'}"
-    )
-    if rename_candidates:
-        print(
-            "  Candidates for --adopt-renamed-checks (a required check looks "
-            f"renamed on an open PR): {' '.join(rename_candidates)}"
-        )
+    if removed := _tagged(unprotect_results, Tag.UNPROTECTED):
+        verb = "Would remove" if args.dry_run else "Removed"
+        summary.append(f"{verb} protection (excluded): {' '.join(removed)}")
+    if summary:
+        print()
+        print("Summary:")
+        for line in summary:
+            print(f"  {line}")
     return 0
 
 

@@ -208,8 +208,7 @@ async def test_gate_covered_jobs_reads_needs_and_strips_matrix_suffix(monkeypatc
             }
         ]
 
-    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
-    assert await protection._gate_covered_jobs("o", "r", "main") == {
+    assert protection._gate_covered_jobs(await fake_docs("o", "r", "main")) == {
         "changes",
         "anodizer",
     }
@@ -254,8 +253,7 @@ async def test_push_only_jobs_follows_event_if_and_needs(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
-    assert await protection._push_only_jobs("o", "r", "main") == {
+    assert protection._push_only_jobs(await fake_docs("o", "r", "main")) == {
         "tag",
         "build",
         "release",
@@ -293,8 +291,7 @@ async def test_push_only_jobs_keeps_job_conditioned_on_needs_outputs(monkeypatch
             }
         ]
 
-    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
-    assert await protection._push_only_jobs("o", "r", "main") == set()
+    assert protection._push_only_jobs(await fake_docs("o", "r", "main")) == set()
 
 
 async def test_path_filtered_gate_workflow_requires_only_the_gate(monkeypatch):
@@ -322,15 +319,15 @@ async def test_path_filtered_gate_workflow_requires_only_the_gate(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
     monkeypatch.setattr(protection, "api_json", fake_api_json)
     _patch_own_suites(monkeypatch, [1])
+    docs = await fake_docs("o", "r", "main")
     contexts = await protection._check_run_contexts(
         "hugoh",
         "repo",
         ["sha"],
-        gate_covered_jobs=await protection._gate_covered_jobs("o", "r", "main"),
-        push_only_jobs=await protection._push_only_jobs("o", "r", "main"),
+        gate_covered_jobs=protection._gate_covered_jobs(docs),
+        push_only_jobs=protection._push_only_jobs(docs),
     )
     assert contexts == ["hk / lint", "lychee-gate"]
 
@@ -524,17 +521,15 @@ def _branch_protection_worker(
             calls.append(method)
         return response
 
-    async def fake_prefixes(owner, name, ref):
-        return set()
+    async def fake_docs(owner, name, ref):
+        return []
 
     async def fake_rulesets(owner, name, default_branch):
         return list(repo_rulesets), list(org_rulesets)
 
     monkeypatch.setattr(protection, "_recent_pr_head_shas", fake_shas)
     monkeypatch.setattr(protection, "_check_run_contexts", fake_contexts)
-    monkeypatch.setattr(protection, "_own_reusable_job_prefixes", fake_prefixes)
-    monkeypatch.setattr(protection, "_gate_covered_jobs", fake_prefixes)
-    monkeypatch.setattr(protection, "_push_only_jobs", fake_prefixes)
+    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
     monkeypatch.setattr(protection, "_matching_rulesets", fake_rulesets)
     monkeypatch.setattr(protection, "_base_branch_check_names", fake_base_checks)
     monkeypatch.setattr(protection, "api_raw", fake_api_raw)
@@ -551,8 +546,7 @@ async def test_branch_protection_worker_dry_run_ok_when_no_prs(monkeypatch):
     worker = _branch_protection_worker(monkeypatch, dry_run=True, status_code=404)
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "no pull requests found yet" in result.line
-    assert "(none yet)" in result.line
+    assert result.line == f"{'repo':<30} would protect: baseline settings; no PRs yet"
 
 
 async def test_branch_protection_worker_dry_run_ok_when_no_check_runs(monkeypatch):
@@ -561,8 +555,8 @@ async def test_branch_protection_worker_dry_run_ok_when_no_check_runs(monkeypatc
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "no check runs found" in result.line
-    assert "(none yet)" in result.line
+    assert "no checks on latest PR" in result.line
+    assert "sha" not in result.line
 
 
 async def test_branch_protection_worker_apply_ok_when_no_prs_yet(monkeypatch):
@@ -580,8 +574,8 @@ async def test_branch_protection_worker_apply_ok_when_no_prs_yet(monkeypatch):
     worker = protection.make_branch_protection_worker(owner="hugoh", dry_run=False)
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert result.tag == protection.Tag.APPLIED_NO_CHECKS
-    assert "protected" in result.line
+    assert result.tag is None
+    assert result.line == f"{'repo':<30} protected: baseline settings; no PRs yet"
     assert "PUT" in calls
 
 
@@ -594,7 +588,7 @@ async def test_branch_protection_worker_dry_run_limited_unchanged_when_plan_gate
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert result.line == (
-        f"{'repo':<30} unchanged: private repo, plan does not allow branch protection"
+        f"{'repo':<30} unchanged: private repo, plan disallows protection"
     )
 
 
@@ -607,7 +601,7 @@ async def test_branch_protection_worker_apply_limited_unchanged_when_plan_gated(
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert result.line == (
-        f"{'repo':<30} unchanged: private repo, plan does not allow branch protection"
+        f"{'repo':<30} unchanged: private repo, plan disallows protection"
     )
 
 
@@ -621,7 +615,7 @@ async def test_branch_protection_worker_dry_run_unchanged_line(monkeypatch):
     )
     result = await worker(REPO)
     assert result.status == Status.UNCHANGED
-    assert result.line == f"{'repo':<30} unchanged: build, test"
+    assert result.line == f"{'repo':<30} unchanged: 2 required checks"
 
 
 async def test_branch_protection_worker_dry_run_shows_old_contexts(monkeypatch):
@@ -634,9 +628,7 @@ async def test_branch_protection_worker_dry_run_shows_old_contexts(monkeypatch):
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert result.line == (
-        f"{'repo':<30} would update -> require: build, test (was: build)"
-    )
+    assert result.line == (f"{'repo':<30} would update: +test")
 
 
 async def test_branch_protection_worker_keeps_checks_when_sampling_yields_none(
@@ -651,8 +643,9 @@ async def test_branch_protection_worker_keeps_checks_when_sampling_yields_none(
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert "keeping check, lychee" in result.line
+    assert "kept existing" in result.line
     assert "would update" not in result.line
+    assert "eba79c" not in result.line
 
 
 async def test_branch_protection_worker_apply_keeps_stale_checks_without_put(
@@ -668,7 +661,7 @@ async def test_branch_protection_worker_apply_keeps_stale_checks_without_put(
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert result.tag == protection.Tag.APPLIED
+    assert result.tag is None
     assert "PUT" not in calls
 
 
@@ -683,7 +676,10 @@ async def test_branch_protection_worker_clears_stale_checks_when_opted_in(monkey
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "would update -> require: (none yet) (was: check, lychee)" in result.line
+    assert (
+        result.line
+        == f"{'repo':<30} would update: -check, -lychee; no checks on latest PR"
+    )
 
 
 def test_reconcile_reusable_prefix_keeps_existing_spelling():
@@ -779,7 +775,7 @@ async def test_branch_protection_worker_adopts_renamed_gate_confirmed_by_base_br
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "protected (Tests)" in result.line
+    assert "updated: +Tests, -test / Tests" in result.line
     assert "PUT" in calls
 
 
@@ -801,7 +797,7 @@ async def test_branch_protection_worker_adopt_renamed_checks_flag_breaks_deadloc
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "protected (Tests)" in result.line
+    assert "updated: +Tests, -test / Tests" in result.line
     assert "PUT" in calls
 
 
@@ -820,8 +816,9 @@ async def test_branch_protection_worker_adopt_renamed_checks_keeps_live_push_onl
         adopt_renamed_checks=True,
     )
     result = await worker(REPO)
-    assert "require: Tests, pages" in result.line
-    assert "dropped test / Tests" in result.line
+    assert "+Tests" in result.line
+    assert "-test / Tests" in result.line
+    assert "pages" not in result.line
 
 
 async def test_branch_protection_worker_adopt_renamed_checks_drops_dead_unmatched_check(
@@ -837,8 +834,8 @@ async def test_branch_protection_worker_adopt_renamed_checks_drops_dead_unmatche
         adopt_renamed_checks=True,
     )
     result = await worker(REPO)
-    assert "require: Tests " in result.line or "require: Tests (" in result.line
-    assert "retired" in result.line
+    assert "+Tests" in result.line
+    assert "-retired" in result.line
 
 
 async def test_branch_protection_worker_without_flag_keeps_stale_gate_on_deadlock(
@@ -855,7 +852,8 @@ async def test_branch_protection_worker_without_flag_keeps_stale_gate_on_deadloc
     )
     result = await worker(REPO)
     assert "PUT" not in calls
-    assert "kept test / Tests over sampled Tests" in result.line
+    assert "kept test / Tests, PR shows Tests" in result.line
+    assert "--adopt-renamed-checks" in result.line
     assert result.tag == protection.Tag.RENAME_CANDIDATE
 
 
@@ -876,7 +874,7 @@ async def test_branch_protection_worker_keeps_existing_check_name_on_prefix_flip
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert "PUT" not in calls
-    assert "kept hk / lint over sampled lint" in result.line
+    assert "kept hk / lint, PR shows lint" in result.line
 
 
 async def test_branch_protection_worker_apply_unchanged_when_already_protected(
@@ -892,8 +890,8 @@ async def test_branch_protection_worker_apply_unchanged_when_already_protected(
     )
     result = await worker(REPO)
     assert result.status == Status.UNCHANGED
-    assert result.line == f"{'repo':<30} unchanged: build, test"
-    assert result.tag == protection.Tag.APPLIED
+    assert result.line == f"{'repo':<30} unchanged: 2 required checks"
+    assert result.tag is None
     assert "PUT" not in calls
 
 
@@ -909,8 +907,8 @@ async def test_branch_protection_worker_apply_ok_when_updating_from_stale_state(
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert result.line == f"{'repo':<30} protected (build, test)"
-    assert result.tag == protection.Tag.APPLIED
+    assert result.line == f"{'repo':<30} updated: +test"
+    assert result.tag is None
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +943,7 @@ async def test_branch_unprotect_worker_removes_existing_protection(monkeypatch):
     result = await worker(REPO)
     assert result.status == Status.OK
     assert result.tag == protection.Tag.UNPROTECTED
-    assert "removed branch protection" in result.line
+    assert "removed protection" in result.line
     assert calls == ["GET", "DELETE"]
 
 
@@ -955,7 +953,8 @@ async def test_branch_unprotect_worker_dry_run_does_not_delete(monkeypatch):
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "would remove branch protection" in result.line
+    assert result.tag == protection.Tag.UNPROTECTED
+    assert "would remove protection" in result.line
     assert calls == ["GET"]
 
 
@@ -1017,7 +1016,7 @@ def test_own_reusable_check_matches_first_segment_and_matrix_leg():
     assert protection._own_reusable_check("CodeQL", {"hk"}) is False
 
 
-async def test_own_reusable_job_prefixes_reads_uses_jobs(monkeypatch):
+async def test_workflow_docs_feed_reusable_job_prefixes(monkeypatch):
     hk_yml = base64.b64encode(
         b"jobs:\n  hk:\n    uses: hugoh/gh-workflows/.github/workflows/hk.yml@x\n"
     ).decode()
@@ -1042,16 +1041,16 @@ async def test_own_reusable_job_prefixes_reads_uses_jobs(monkeypatch):
 
     monkeypatch.setattr(protection, "api_raw", fake_api_raw)
     monkeypatch.setattr(protection, "api_json", fake_api_json)
-    prefixes = await protection._own_reusable_job_prefixes("hugoh", "repo", "main")
-    assert prefixes == {"hk"}
+    docs = await protection._workflow_docs("hugoh", "repo", "main")
+    assert protection._own_reusable_job_prefixes(docs) == {"hk"}
 
 
-async def test_own_reusable_job_prefixes_empty_when_no_workflows_dir(monkeypatch):
+async def test_workflow_docs_empty_when_no_workflows_dir(monkeypatch):
     async def fake_api_raw(method, path, **kwargs):
         return _FakeResponse(404)
 
     monkeypatch.setattr(protection, "api_raw", fake_api_raw)
-    assert await protection._own_reusable_job_prefixes("hugoh", "r", "main") == set()
+    assert await protection._workflow_docs("hugoh", "r", "main") == []
 
 
 # ---------------------------------------------------------------------------
@@ -1179,17 +1178,15 @@ def _patch_branch_protection_lookups(monkeypatch, *, contexts, matching_rulesets
     ):
         return list(contexts)
 
-    async def fake_prefixes(owner, name, ref):
-        return {"hk"}
+    async def fake_docs(owner, name, ref):
+        return []
 
     async def fake_rulesets(owner, name, default_branch):
         return list(matching_rulesets), []
 
     monkeypatch.setattr(protection, "_recent_pr_head_shas", fake_shas)
     monkeypatch.setattr(protection, "_check_run_contexts", fake_contexts)
-    monkeypatch.setattr(protection, "_own_reusable_job_prefixes", fake_prefixes)
-    monkeypatch.setattr(protection, "_gate_covered_jobs", fake_prefixes)
-    monkeypatch.setattr(protection, "_push_only_jobs", fake_prefixes)
+    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
     monkeypatch.setattr(protection, "_matching_rulesets", fake_rulesets)
 
 
@@ -1219,7 +1216,7 @@ async def test_ruleset_worker_dry_run_reports_would_update_without_put(monkeypat
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "would update ruleset -> require: hk / lint (was: check)" in result.line
+    assert "would update ruleset: +hk / lint, -check" in result.line
     assert not any(m == "PUT" for m, _p, _j in calls)
 
 
@@ -1229,7 +1226,7 @@ async def test_ruleset_worker_apply_puts_full_round_tripped_body(monkeypatch):
         monkeypatch, dry_run=False, contexts=["hk / lint"], repo_rulesets=[ruleset]
     )
     result = await worker(REPO)
-    assert result.tag == protection.Tag.APPLIED_RULESET
+    assert result.tag is None
     put = [c for c in calls if c[0] == "PUT"]
     assert len(put) == 1
     _method, path, body = put[0]
@@ -1249,7 +1246,7 @@ async def test_ruleset_worker_evaluate_mode_is_limited(monkeypatch):
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED
-    assert result.tag == protection.Tag.RULESET_EVALUATE_MODE
+    assert result.tag == protection.Tag.ATTENTION
     assert "evaluate mode" in result.line
 
 
@@ -1262,8 +1259,8 @@ async def test_ruleset_worker_multiple_rulesets_reports_and_skips(monkeypatch):
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert result.tag == protection.Tag.MULTIPLE_RULESETS
-    assert "multiple rulesets enforce required checks: 1, 2" in result.line
+    assert result.tag == protection.Tag.ATTENTION
+    assert "multiple rulesets enforce checks (1, 2)" in result.line
     assert not any(m == "PUT" for m, _p, _j in calls)
 
 
@@ -1277,7 +1274,7 @@ async def test_both_mechanism_writes_classic_and_ruleset(monkeypatch):
     )
     # classic GET returns 200 with empty body -> not up to date -> both PUTs
     result = await worker(REPO)
-    assert result.tag == protection.Tag.APPLIED_BOTH
+    assert result.tag is None
     puts = [p for m, p, _j in calls if m == "PUT"]
     assert any(p.endswith("/protection") for p in puts)
     assert any(p == "/repos/hugoh/repo/rulesets/1" for p in puts)
@@ -1360,7 +1357,7 @@ async def test_plan_gated_worker_creates_ruleset_when_contexts_sampled(monkeypat
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert result.tag == protection.Tag.APPLIED_RULESET
+    assert result.tag is None
     posts = [c for c in calls if c[0] == "POST"]
     assert len(posts) == 1
     _method, path, body = posts[0]
@@ -1372,7 +1369,7 @@ async def test_plan_gated_worker_creates_ruleset_when_contexts_sampled(monkeypat
         "deletion",
     ]
     assert body["bypass_actors"][0]["actor_type"] == "RepositoryRole"
-    assert "created ruleset -> require: hk / lint" in result.line
+    assert "created ruleset: +hk / lint" in result.line
 
 
 async def test_plan_gated_worker_dry_run_reports_would_create_no_post(monkeypatch):
@@ -1381,7 +1378,7 @@ async def test_plan_gated_worker_dry_run_reports_would_create_no_post(monkeypatc
     )
     result = await worker(REPO)
     assert result.status == Status.OK
-    assert "would create ruleset -> require: hk / lint" in result.line
+    assert "would create ruleset: +hk / lint" in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
 
 
@@ -1397,7 +1394,7 @@ async def test_plan_gated_worker_reports_skip_when_rulesets_also_plan_gated(
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert result.tag == protection.Tag.SKIPPED_NO_PLAN
-    assert "plan does not allow branch protection" in result.line
+    assert "plan disallows protection" in result.line
     assert "would create ruleset" not in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
 
@@ -1416,7 +1413,7 @@ async def test_plan_gated_worker_still_skips_when_no_contexts(monkeypatch):
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
     assert result.tag == protection.Tag.SKIPPED_NO_PLAN
-    assert "plan does not allow branch protection" in result.line
+    assert "plan disallows protection" in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
 
 
@@ -1443,5 +1440,63 @@ async def test_plan_gated_worker_manual_attention_when_plain_branch_ruleset_exis
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert result.tag == protection.Tag.RULESET_NO_CHECKS_RULE
+    assert result.tag == protection.Tag.ATTENTION
     assert not any(m == "POST" for m, _p, _j in calls)
+
+
+async def test_ruleset_worker_dry_run_multiple_rulesets_is_tagged(monkeypatch):
+    worker, _calls = _ruleset_worker(
+        monkeypatch,
+        dry_run=True,
+        contexts=["hk / lint"],
+        repo_rulesets=[_ruleset(["check"], rid=1), _ruleset(["check"], rid=2)],
+    )
+    result = await worker(REPO)
+    assert result.tag == protection.Tag.ATTENTION
+
+
+async def test_branch_protection_worker_dry_run_tags_rename_candidate(monkeypatch):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["prsha"],
+        contexts=["lint"],
+        current=_protection_state(contexts=["hk / lint"]),
+    )
+    result = await worker(REPO)
+    assert result.tag == protection.Tag.RENAME_CANDIDATE
+
+
+async def test_branch_protection_worker_fetches_workflow_files_once(monkeypatch):
+    fetches = []
+
+    async def counting_docs(owner, name, ref):
+        fetches.append(ref)
+        return []
+
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["sha"],
+        contexts=["build"],
+        current=_protection_state(contexts=["build"]),
+    )
+    monkeypatch.setattr(protection, "_workflow_docs", counting_docs)
+    await worker(REPO)
+    assert fetches == ["main"]
+
+
+async def test_branch_protection_worker_keeps_existing_checks_when_repo_has_no_prs(
+    monkeypatch,
+):
+    worker, calls = _branch_protection_worker(
+        monkeypatch,
+        dry_run=False,
+        shas=[],
+        current=_protection_state(contexts=["check"]),
+        track_calls=True,
+    )
+    result = await worker(REPO)
+    assert result.status == Status.LIMITED_UNCHANGED
+    assert "no PRs yet" in result.line
+    assert "PUT" not in calls

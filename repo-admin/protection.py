@@ -22,19 +22,15 @@ from lib import (
     api_raw,
     error_message,
     result_line,
+    run_reconcile,
 )
 
 
 class Tag(enum.StrEnum):
-    APPLIED = "applied"
+    """What `cmd_protection_sync` reports at the end of a run."""
+
+    ATTENTION = "attention"
     RENAME_CANDIDATE = "rename_candidate"
-    APPLIED_NO_CHECKS = "applied_no_checks"
-    APPLIED_RULESET = "applied_ruleset"
-    APPLIED_BOTH = "applied_both"
-    RULESET_EVALUATE_MODE = "ruleset_evaluate_mode"
-    MULTIPLE_RULESETS = "multiple_rulesets"
-    ORG_RULESET = "org_ruleset"
-    RULESET_NO_CHECKS_RULE = "ruleset_no_checks_rule"
     SKIPPED_NO_PLAN = "skipped_no_plan"
     UNPROTECTED = "unprotected"
 
@@ -58,12 +54,6 @@ class Tag(enum.StrEnum):
 # forever. (A job skipped via an `if:` condition inside a triggered workflow
 # is fine to require -- GitHub reports that as a passing "skipped" check.)
 # Sampling an actual PR's check runs avoids picking up the former case.
-#
-# When a repo that already requires checks yields none to sample (the latest
-# PR's workflow runs aged out of the API, a stale pre-CI PR got bumped to the
-# top by a comment), its existing contexts are retained rather than the merge
-# gate being cleared; --clear-stale-checks opts into dropping them for a repo
-# that genuinely retired its CI.
 #
 # Only check runs reported by the "github-actions" app are considered:
 # third-party apps (DeepSource, Codecov, etc.) aren't defined by the repo
@@ -248,7 +238,7 @@ async def _workflow_docs(owner: str, name: str, ref: str) -> list[dict]:
     return docs
 
 
-async def _own_reusable_job_prefixes(owner: str, name: str, ref: str) -> set[str]:
+def _own_reusable_job_prefixes(docs: list[dict]) -> set[str]:
     """Job keys / names of jobs in the repo's own `.github/workflows/*.yml`
     that call a reusable workflow via `uses:`.
 
@@ -261,7 +251,7 @@ async def _own_reusable_job_prefixes(owner: str, name: str, ref: str) -> set[str
     one of these prefixes.
     """
     prefixes: set[str] = set()
-    for doc in await _workflow_docs(owner, name, ref):
+    for doc in docs:
         for key, job in (doc.get("jobs") or {}).items():
             if isinstance(job, dict) and isinstance(job.get("uses"), str):
                 prefixes.add(key)
@@ -274,14 +264,14 @@ _GATE_JOB = re.compile(r"(^|-)gate$")
 _MATRIX_SUFFIX = re.compile(r" \(.+\)$")
 
 
-async def _gate_covered_jobs(owner: str, name: str, ref: str) -> set[str]:
+def _gate_covered_jobs(docs: list[dict]) -> set[str]:
     """Names (matrix suffix stripped) of jobs a `*-gate` job lists in `needs:`.
 
     The gate is the stable required check; the jobs it aggregates, like
     `anodizer (ubuntu-latest)` and `changes` behind `cross-gate`, are not.
     """
     covered: set[str] = set()
-    for doc in await _workflow_docs(owner, name, ref):
+    for doc in docs:
         jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
         for key, job in jobs.items():
             if not _GATE_JOB.search(key):
@@ -296,7 +286,7 @@ async def _gate_covered_jobs(owner: str, name: str, ref: str) -> set[str]:
 
 
 def _own_reusable_check(name: str, own_reusable_job_prefixes: set[str]) -> bool:
-    stripped = re.sub(r" \(.+\)$", "", name)
+    stripped = _MATRIX_SUFFIX.sub("", name)
     if " / " not in stripped:
         return False
     return stripped.split(" / ", 1)[0] in own_reusable_job_prefixes
@@ -380,7 +370,7 @@ def _never_runs_on_pull_request(condition: str) -> bool:
     )
 
 
-async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
+def _push_only_jobs(docs: list[dict]) -> set[str]:
     """Names of jobs that never run on a pull request.
 
     A job whose `if` selects push/dispatch events without mentioning
@@ -388,7 +378,7 @@ async def _push_only_jobs(owner: str, name: str, ref: str) -> set[str]:
     up skipped on a PR head and must not become required.
     """
     out: set[str] = set()
-    for doc in await _workflow_docs(owner, name, ref):
+    for doc in docs:
         jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
         skipped = {
             k
@@ -804,74 +794,316 @@ async def _put_ruleset_checks(
         raise GhError(error_message(response), status_code=response.status_code)
 
 
-def _plan_gated_result(repo: Repo, *, tag: Tag | None = None) -> RepoResult:
+def _attention_result(repo: Repo, detail: str) -> RepoResult:
     status = Status.LIMITED_UNCHANGED
-    detail = "private repo, plan does not allow branch protection"
-    return RepoResult(repo, result_line(repo.name, detail, status), status, tag=tag)
+    return RepoResult(
+        repo, result_line(repo.name, detail, status), status, tag=Tag.ATTENTION
+    )
 
 
-async def _create_protection_ruleset(
-    owner: str, repo: Repo, contexts: list[str], dry_run: bool
-) -> RepoResult:
-    """A plan-gated private repo can't use classic branch protection.
-    Repository rulesets are a separate feature that's available on *some*
-    plans where classic protection isn't (e.g. free organizations, where
-    rulesets can be created -- just not enforced -- on private repos), so
-    it's worth trying as a fallback. But on a plan that gates rulesets too
-    (e.g. a personal account's private repo below GitHub Pro, confirmed via
-    `GET /rulesets` -> 403 "Upgrade to GitHub Pro or make this repository
-    public"), there's no fallback: creation is bailed out on below. When a
-    ruleset can be created, a later `protection sync` run finds it via
-    `_matching_rulesets` (it carries a `required_status_checks` rule) and
-    takes the normal ruleset path, so this only ever creates -- never
-    updates.
+def _plan_gated_result(repo: Repo) -> RepoResult:
+    status = Status.LIMITED_UNCHANGED
+    detail = "private repo, plan disallows protection"
+    return RepoResult(
+        repo, result_line(repo.name, detail, status), status, tag=Tag.SKIPPED_NO_PLAN
+    )
+
+
+async def _ruleset_creation_blocker(owner: str, repo: Repo) -> RepoResult | None:
+    """A plan-gated private repo can't use classic branch protection, but
+    repository rulesets are available on *some* plans where it isn't, so one
+    is created as a fallback. Returns why that isn't possible -- the plan
+    gates rulesets too (`GET /rulesets` -> 403), or a branch ruleset without a
+    required-checks rule already exists -- or None when creation can proceed.
+    Once created, a later run finds the ruleset via `_matching_rulesets` and
+    takes the normal ruleset path, so this only ever creates.
     """
     listing = await api_raw(
         "GET", f"/repos/{owner}/{repo.name}/rulesets", params={"targets": "branch"}
     )
     if listing.status_code in (403, 404):
-        # Repository rulesets are plan-gated for private repos on the same
-        # plans that gate classic branch protection -- there is no fallback.
-        # Bail here so dry-run reports the skip instead of promising a
-        # ruleset the apply path can't create.
-        return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
+        return _plan_gated_result(repo)
     summaries = listing.json() if listing.is_success else None
     if isinstance(summaries, list) and any(
         s.get("enforcement") in ("active", "evaluate") for s in summaries
     ):
-        detail = (
-            "plan-gated; a branch ruleset without a required-checks rule already "
-            "exists -- add the gate to it manually"
+        return _attention_result(
+            repo, "plan-gated; a branch ruleset lacks a checks rule -- add it manually"
         )
-        return RepoResult(
-            repo,
-            result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
-            Status.LIMITED_UNCHANGED,
-            tag=Tag.RULESET_NO_CHECKS_RULE,
-        )
+    return None
 
-    require_desc = ", ".join(sorted(contexts))
-    if dry_run:
-        detail = f"would create ruleset -> require: {require_desc}"
-        return RepoResult(repo, result_line(repo.name, detail, Status.OK), Status.OK)
 
+async def _create_protection_ruleset(
+    owner: str, repo: Repo, contexts: list[str]
+) -> bool:
     response = await api_raw(
         "POST",
         f"/repos/{owner}/{repo.name}/rulesets",
         json=new_ruleset_payload(repo.default_branch, contexts),
     )
     if response.status_code in (403, 404):
-        return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
+        return False
     if not response.is_success:
         raise GhError(error_message(response), status_code=response.status_code)
+    return True
 
-    detail = f"created ruleset -> require: {require_desc}"
-    return RepoResult(
-        repo,
-        result_line(repo.name, detail, Status.OK),
-        Status.OK,
-        tag=Tag.APPLIED_RULESET,
+
+async def _sample_contexts(
+    owner: str, repo: Repo, pr_head_shas: list[str]
+) -> list[str]:
+    docs = await _workflow_docs(owner, repo.name, repo.default_branch)
+    return await _check_run_contexts(
+        owner,
+        repo.name,
+        pr_head_shas,
+        _own_reusable_job_prefixes(docs),
+        _gate_covered_jobs(docs),
+        _push_only_jobs(docs),
     )
+
+
+@dataclass
+class _Reconciled:
+    contexts: list[str]
+    notes: list[str] = field(default_factory=list)
+    rename_candidate: bool = False
+
+
+async def _reconcile_with_existing(
+    owner: str,
+    repo: Repo,
+    sampled: list[str],
+    existing: list[str],
+    *,
+    adopt_renamed_checks: bool,
+) -> _Reconciled:
+    """Settles which spelling of each required check wins between a fresh PR
+    sample and what's already required, consulting the default branch only
+    when the two disagree.
+    """
+    sampled_sorted = sorted(set(sampled))
+    if _reconcile_reusable_prefix(sampled, existing) == sampled_sorted:
+        return _Reconciled(sampled)
+
+    base_branch_checks = await _base_branch_check_names(
+        owner, repo.name, repo.default_branch
+    )
+    reconciled = _reconcile_reusable_prefix(
+        sampled,
+        existing,
+        base_branch_checks,
+        prefer_sampled=adopt_renamed_checks,
+    )
+    live = _live_unsampled_checks(sampled, existing, base_branch_checks)
+    contexts = sorted(set(reconciled) | live)
+    if reconciled == sampled_sorted:
+        return _Reconciled(contexts)
+
+    kept = sorted(set(reconciled) - set(sampled))
+    note = (
+        f"kept {', '.join(kept)}, PR shows {', '.join(sampled_sorted)} "
+        "(--adopt-renamed-checks if renamed)"
+    )
+    return _Reconciled(contexts, [note], rename_candidate=True)
+
+
+@dataclass
+class _Plan:
+    repo: Repo
+    target: ChecksTarget
+    existing: list[str]
+    contexts: list[str]
+    notes: list[str] = field(default_factory=list)
+    stale_retained: bool = False
+    rename_candidate: bool = False
+    create_ruleset: bool = False
+    final: RepoResult | None = None
+
+    @property
+    def up_to_date(self) -> bool:
+        return checks_target_up_to_date(self.target, self.contexts)
+
+    @property
+    def evaluate_mode(self) -> bool:
+        return any(
+            rs.get("enforcement") == "evaluate" for rs in self.target.repo_rulesets
+        )
+
+    @property
+    def tag(self) -> Tag | None:
+        if self.evaluate_mode:
+            return Tag.ATTENTION
+        return Tag.RENAME_CANDIDATE if self.rename_candidate else None
+
+
+async def _classic_protection(owner: str, repo: Repo) -> tuple[dict | None, bool]:
+    """`(current protection, plan_gated)` for the default branch."""
+    response = await api_raw(
+        "GET",
+        f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
+    )
+    if response.status_code in (403, 404):
+        return None, response.status_code == 403
+    if not response.is_success:
+        raise GhError(error_message(response), status_code=response.status_code)
+    return response.json(), False
+
+
+async def _plan_protection(
+    owner: str,
+    repo: Repo,
+    *,
+    clear_stale_checks: bool,
+    adopt_renamed_checks: bool,
+) -> _Plan:
+    """Reads a repo's state and decides what protection it should end up with.
+
+    Contexts to require come from a recent PR's check runs. Without any PR
+    (or any check runs on the latest one) a repo that already requires checks
+    keeps them rather than having the merge gate silently cleared;
+    --clear-stale-checks opts into dropping them. With nothing to keep, the
+    baseline (PR required, no force-push/deletion, admins enforced) still
+    applies without gating on specific checks.
+    """
+    pr_head_shas = await _recent_pr_head_shas(owner, repo.name)
+    sampled = await _sample_contexts(owner, repo, pr_head_shas) if pr_head_shas else []
+    classic, plan_gated = await _classic_protection(owner, repo)
+    repo_rulesets, org_rulesets = await _matching_rulesets(
+        owner, repo.name, repo.default_branch
+    )
+    target = ChecksTarget(
+        classic=classic, repo_rulesets=repo_rulesets, org_rulesets=org_rulesets
+    )
+    plan = _Plan(repo, target, target.current_contexts(), sampled)
+
+    if plan_gated and target.mechanism != "ruleset":
+        if not sampled:
+            plan.final = _plan_gated_result(repo)
+        else:
+            plan.final = await _ruleset_creation_blocker(owner, repo)
+            plan.create_ruleset = plan.final is None
+        return plan
+
+    if sampled and plan.existing:
+        reconciled = await _reconcile_with_existing(
+            owner,
+            repo,
+            sampled,
+            plan.existing,
+            adopt_renamed_checks=adopt_renamed_checks,
+        )
+        plan.contexts = reconciled.contexts
+        plan.notes += reconciled.notes
+        plan.rename_candidate = reconciled.rename_candidate
+        plan.stale_retained = reconciled.rename_candidate
+
+    if not plan.contexts:
+        plan.notes.append(
+            "no PRs yet" if not pr_head_shas else "no checks on latest PR"
+        )
+        if plan.existing and not clear_stale_checks:
+            plan.contexts = plan.existing
+            plan.stale_retained = True
+            plan.notes.append("kept existing (--clear-stale-checks to drop)")
+
+    plan.final = _unmanageable_rulesets(plan)
+    return plan
+
+
+def _unmanageable_rulesets(plan: _Plan) -> RepoResult | None:
+    suffix = "".join(f"; {note}" for note in plan.notes)
+    if len(plan.target.repo_rulesets) > 1:
+        ids = ", ".join(sorted(str(rs["id"]) for rs in plan.target.repo_rulesets))
+        detail = f"multiple rulesets enforce checks ({ids}) -- resolve manually"
+        return _attention_result(plan.repo, detail + suffix)
+    if plan.target.org_rulesets and not plan.up_to_date:
+        ids = ", ".join(str(rs["id"]) for rs in plan.target.org_rulesets)
+        detail = f"org ruleset {ids} enforces checks; not managed here"
+        return _attention_result(plan.repo, detail + suffix)
+    return None
+
+
+_MECHANISM_LABEL = {
+    "none": "",
+    "classic": "",
+    "ruleset": "ruleset",
+    "both": "classic + ruleset",
+}
+
+
+def _changes(existing: list[str], contexts: list[str]) -> str:
+    added = [f"+{c}" for c in sorted(set(contexts) - set(existing))]
+    removed = [f"-{c}" for c in sorted(set(existing) - set(contexts))]
+    return ", ".join(added + removed) or "baseline settings"
+
+
+def _result(plan: _Plan, *, applied: bool) -> RepoResult:
+    limited = plan.stale_retained or plan.evaluate_mode
+    notes = [*plan.notes]
+    if plan.evaluate_mode:
+        notes.append("evaluate mode, not enforcing")
+    suffix = "".join(f"; {note}" for note in notes)
+
+    if plan.up_to_date:
+        status = Status.LIMITED_UNCHANGED if limited else Status.UNCHANGED
+        count = len(plan.contexts)
+        label = _MECHANISM_LABEL[plan.target.mechanism]
+        detail = (f"{label}: " if label else "") + (
+            f"{count} required check{'s' if count != 1 else ''}"
+            if count
+            else "no required checks"
+        )
+    else:
+        status = Status.LIMITED if limited else Status.OK
+        detail = _change_description(plan, applied=applied)
+    return RepoResult(
+        plan.repo,
+        result_line(plan.repo.name, detail + suffix, status),
+        status,
+        tag=plan.tag,
+    )
+
+
+def _change_description(plan: _Plan, *, applied: bool) -> str:
+    changes = _changes(plan.existing, plan.contexts)
+    if plan.create_ruleset:
+        return f"{'created' if applied else 'would create'} ruleset: {changes}"
+    mechanism = plan.target.mechanism
+    if mechanism == "none":
+        return f"{'protected' if applied else 'would protect'}: {changes}"
+    label = _MECHANISM_LABEL[mechanism]
+    verb = "updated" if applied else "would update"
+    return f"{verb} {label}: {changes}" if label else f"{verb}: {changes}"
+
+
+async def _apply_plan(owner: str, plan: _Plan) -> RepoResult:
+    repo, mechanism = plan.repo, plan.target.mechanism
+    if plan.create_ruleset:
+        if not await _create_protection_ruleset(owner, repo, plan.contexts):
+            return _plan_gated_result(repo)
+    elif not plan.up_to_date:
+        if mechanism in ("ruleset", "both"):
+            if mechanism == "both":
+                await _put_classic_protection(owner, repo, plan.contexts)
+            for ruleset in plan.target.repo_rulesets:
+                await _put_ruleset_checks(owner, repo.name, ruleset, plan.contexts)
+        elif not await _put_classic_protection(owner, repo, plan.contexts):
+            return _plan_gated_result(repo)
+    return _result(plan, applied=True)
+
+
+async def _put_classic_protection(owner: str, repo: Repo, contexts: list[str]) -> bool:
+    """False when the plan gates classic protection."""
+    response = await api_raw(
+        "PUT",
+        f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
+        json=branch_protection_payload(contexts),
+    )
+    if response.status_code == 403:
+        return False
+    if not response.is_success:
+        raise GhError(error_message(response), status_code=response.status_code)
+    return True
 
 
 def make_branch_protection_worker(
@@ -881,273 +1113,25 @@ def make_branch_protection_worker(
     adopt_renamed_checks: bool = False,
 ):
     async def worker(repo: Repo) -> RepoResult:
-        # Contexts to require are derived from a recent PR's check runs when
-        # available. Without any (a brand-new repo, or one that's only ever
-        # been pushed to directly), the baseline protection -- PR required,
-        # no force-push/deletion, admins enforced -- still applies; it just
-        # can't gate on specific status checks yet. A later run picks up
-        # contexts once a PR exists to sample them from.
-        #
-        # A repo that already requires checks but yields no sampleable ones
-        # (the latest PR's workflow runs aged out, a stale PR predating CI got
-        # bumped to the top by a comment) keeps its existing contexts rather
-        # than having the merge gate silently cleared; --clear-stale-checks
-        # opts into dropping them for a repo that genuinely retired its CI.
-        pr_head_shas = await _recent_pr_head_shas(owner, repo.name)
-        own_reusable_job_prefixes = await _own_reusable_job_prefixes(
-            owner, repo.name, repo.default_branch
-        )
-        contexts: list[str] = []
-        if pr_head_shas:
-            contexts = await _check_run_contexts(
+        async def fetch() -> _Plan:
+            return await _plan_protection(
                 owner,
-                repo.name,
-                pr_head_shas,
-                own_reusable_job_prefixes,
-                await _gate_covered_jobs(owner, repo.name, repo.default_branch),
-                await _push_only_jobs(owner, repo.name, repo.default_branch),
-            )
-
-        protection_response = await api_raw(
-            "GET",
-            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
-        )
-        plan_gated = protection_response.status_code == 403
-        if plan_gated or protection_response.status_code == 404:
-            current = None
-        elif protection_response.is_success:
-            current = protection_response.json()
-        else:
-            raise GhError(
-                error_message(protection_response),
-                status_code=protection_response.status_code,
-            )
-
-        repo_rulesets, org_rulesets = await _matching_rulesets(
-            owner, repo.name, repo.default_branch
-        )
-        target = ChecksTarget(
-            classic=current,
-            repo_rulesets=repo_rulesets,
-            org_rulesets=org_rulesets,
-        )
-        mechanism = target.mechanism
-
-        # A plan that gates classic protection only matters when no ruleset
-        # already enforces the checks gate; with one, that's the write target.
-        # With checks to require but no mechanism, fall back to a ruleset --
-        # available on every plan, unlike classic protection on private repos.
-        if plan_gated and mechanism != "ruleset":
-            if contexts:
-                return await _create_protection_ruleset(owner, repo, contexts, dry_run)
-            return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
-
-        existing = target.current_contexts()
-        stale_retained = False
-        rename_candidate = False
-        pending_note = None
-        if contexts and existing:
-            reconciled = _reconcile_reusable_prefix(contexts, existing)
-            if reconciled != sorted(set(contexts)):
-                base_branch_checks = await _base_branch_check_names(
-                    owner, repo.name, repo.default_branch
-                )
-                reconciled = _reconcile_reusable_prefix(
-                    contexts,
-                    existing,
-                    base_branch_checks,
-                    prefer_sampled=adopt_renamed_checks,
-                )
-                live = _live_unsampled_checks(contexts, existing, base_branch_checks)
-                renamed = sorted(set(existing) - set(reconciled) - set(contexts) - live)
-                if reconciled != sorted(set(contexts)):
-                    kept = sorted(set(reconciled) - set(contexts))
-                    pending_note = (
-                        f"kept {', '.join(kept)} over sampled "
-                        f"{', '.join(sorted(set(contexts)))} "
-                        "(reusable-workflow check-name inconsistency across runs; "
-                        "if this is a real rename, rerun with --adopt-renamed-checks)"
-                    )
-                    contexts = sorted(set(reconciled) | live)
-                    stale_retained = True
-                    rename_candidate = True
-                elif renamed:
-                    reason = (
-                        "--adopt-renamed-checks"
-                        if adopt_renamed_checks
-                        else f"absent from recent {repo.default_branch} check runs"
-                    )
-                    pending_note = (
-                        f"dropped {', '.join(renamed)} for sampled "
-                        f"{', '.join(sorted(set(contexts)))} ({reason})"
-                    )
-                    contexts = sorted(set(reconciled) | live)
-        if not pr_head_shas:
-            pending_note = "no pull requests found yet, requiring none for now"
-        elif not contexts and existing and not clear_stale_checks:
-            contexts = existing
-            stale_retained = True
-            pending_note = (
-                f"no check runs found on latest PR commit {pr_head_shas[0]}; "
-                f"keeping {', '.join(existing)} "
-                "(pass --clear-stale-checks to drop them)"
-            )
-        elif not contexts:
-            pending_note = (
-                f"no check runs found on latest PR commit {pr_head_shas[0]}, "
-                "requiring none for now"
-            )
-
-        up_to_date = checks_target_up_to_date(target, contexts)
-
-        require_desc = ", ".join(contexts) if contexts else "(none yet)"
-        suffix = f"; {pending_note}" if pending_note else ""
-        if rename_candidate:
-            tag = Tag.RENAME_CANDIDATE
-        else:
-            tag = Tag.APPLIED if contexts else Tag.APPLIED_NO_CHECKS
-        ok_status = Status.LIMITED if stale_retained else Status.OK
-        unchanged_status = (
-            Status.LIMITED_UNCHANGED if stale_retained else Status.UNCHANGED
-        )
-
-        if mechanism in ("ruleset", "both"):
-            ruleset_ids = sorted(str(rs["id"]) for rs in repo_rulesets)
-            mech_label = "ruleset" if mechanism == "ruleset" else "classic + ruleset"
-
-            if len(repo_rulesets) > 1:
-                detail = (
-                    "multiple rulesets enforce required checks: "
-                    f"{', '.join(ruleset_ids)} -- resolve manually{suffix}"
-                )
-                return RepoResult(
-                    repo,
-                    result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
-                    Status.LIMITED_UNCHANGED,
-                    tag=Tag.MULTIPLE_RULESETS,
-                )
-
-            if org_rulesets and not up_to_date:
-                org_ids = ", ".join(str(rs["id"]) for rs in org_rulesets)
-                detail = (
-                    f"required checks enforced by an org ruleset {org_ids}; "
-                    f"not managed here{suffix}"
-                )
-                return RepoResult(
-                    repo,
-                    result_line(repo.name, detail, Status.LIMITED_UNCHANGED),
-                    Status.LIMITED_UNCHANGED,
-                    tag=Tag.ORG_RULESET,
-                )
-
-            evaluate_mode = any(
-                rs.get("enforcement") == "evaluate" for rs in repo_rulesets
-            )
-            if evaluate_mode:
-                applied_tag = Tag.RULESET_EVALUATE_MODE
-            elif rename_candidate:
-                applied_tag = Tag.RENAME_CANDIDATE
-            elif mechanism == "ruleset":
-                applied_tag = Tag.APPLIED_RULESET
-            else:
-                applied_tag = Tag.APPLIED_BOTH
-            limited = evaluate_mode or stale_retained
-            result_ok = Status.LIMITED if limited else Status.OK
-            result_unchanged = Status.LIMITED_UNCHANGED if limited else Status.UNCHANGED
-            eval_note = (
-                "; ruleset in evaluate mode, not enforcing" if evaluate_mode else ""
-            )
-
-            if dry_run:
-                if up_to_date:
-                    detail = f"{mech_label}: {require_desc}{suffix}{eval_note}"
-                    return RepoResult(
-                        repo,
-                        result_line(repo.name, detail, result_unchanged),
-                        result_unchanged,
-                    )
-                was_desc = ", ".join(existing) if existing else "(none yet)"
-                detail = (
-                    f"would update {mech_label} -> require: {require_desc} "
-                    f"(was: {was_desc}){suffix}{eval_note}"
-                )
-                return RepoResult(
-                    repo, result_line(repo.name, detail, result_ok), result_ok
-                )
-
-            if up_to_date:
-                detail = f"{mech_label}: {require_desc}{suffix}{eval_note}"
-                return RepoResult(
-                    repo,
-                    result_line(repo.name, detail, result_unchanged),
-                    result_unchanged,
-                    tag=applied_tag,
-                )
-
-            if mechanism == "both":
-                classic_put = await api_raw(
-                    "PUT",
-                    f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
-                    json=branch_protection_payload(contexts),
-                )
-                if not classic_put.is_success and classic_put.status_code != 403:
-                    raise GhError(
-                        error_message(classic_put),
-                        status_code=classic_put.status_code,
-                    )
-            for ruleset in repo_rulesets:
-                await _put_ruleset_checks(owner, repo.name, ruleset, contexts)
-
-            detail = f"protected via {mech_label} ({require_desc}){suffix}{eval_note}"
-            return RepoResult(
                 repo,
-                result_line(repo.name, detail, result_ok),
-                result_ok,
-                tag=applied_tag,
+                clear_stale_checks=clear_stale_checks,
+                adopt_renamed_checks=adopt_renamed_checks,
             )
 
-        if dry_run:
-            if up_to_date:
-                detail = f"{require_desc}{suffix}"
-                return RepoResult(
-                    repo,
-                    result_line(repo.name, detail, unchanged_status),
-                    unchanged_status,
-                    tag=Tag.RENAME_CANDIDATE if rename_candidate else None,
-                )
-            was_desc = ", ".join(existing) if existing else "(none yet)"
-            detail = (
-                f"would update -> require: {require_desc} (was: {was_desc}){suffix}"
-            )
-            return RepoResult(
-                repo, result_line(repo.name, detail, ok_status), ok_status
-            )
+        def plan_result(plan: _Plan) -> RepoResult:
+            return plan.final or _result(plan, applied=False)
 
-        if up_to_date:
-            detail = f"{require_desc}{suffix}"
-            return RepoResult(
-                repo,
-                result_line(repo.name, detail, unchanged_status),
-                unchanged_status,
-                tag=tag,
-            )
+        async def apply_result(plan: _Plan) -> RepoResult:
+            return plan.final or await _apply_plan(owner, plan)
 
-        payload = branch_protection_payload(contexts)
-        put_response = await api_raw(
-            "PUT",
-            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
-            json=payload,
-        )
-        if put_response.status_code == 403:
-            return _plan_gated_result(repo, tag=Tag.SKIPPED_NO_PLAN)
-        if not put_response.is_success:
-            raise GhError(
-                error_message(put_response), status_code=put_response.status_code
-            )
-
-        detail = f"protected ({require_desc}){suffix}"
-        return RepoResult(
-            repo, result_line(repo.name, detail, ok_status), ok_status, tag=tag
+        return await run_reconcile(
+            dry_run=dry_run,
+            fetch=fetch,
+            plan_result=plan_result,
+            apply_result=apply_result,
         )
 
     return worker
@@ -1165,44 +1149,27 @@ def make_branch_unprotect_worker(owner: str, dry_run: bool):
     # repos are meant to have no CI/PR workflow and haven't needed one;
     # add ruleset removal if one of them ever gets one.
     """
+    path = lambda repo: (
+        f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection"
+    )
 
     async def worker(repo: Repo) -> RepoResult:
-        response = await api_raw(
-            "GET",
-            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
-        )
+        response = await api_raw("GET", path(repo))
         if response.status_code == 404:
-            return RepoResult(
-                repo,
-                result_line(
-                    repo.name, "already unprotected (excluded)", Status.UNCHANGED
-                ),
-                Status.UNCHANGED,
+            line = result_line(
+                repo.name, "already unprotected (excluded)", Status.UNCHANGED
             )
+            return RepoResult(repo, line, Status.UNCHANGED)
         if not response.is_success:
             raise GhError(error_message(response), status_code=response.status_code)
 
-        if dry_run:
-            detail = "would remove branch protection (excluded)"
-            return RepoResult(
-                repo, result_line(repo.name, detail, Status.OK), Status.OK
-            )
+        if not dry_run:
+            deleted = await api_raw("DELETE", path(repo))
+            if not deleted.is_success:
+                raise GhError(error_message(deleted), status_code=deleted.status_code)
 
-        delete_response = await api_raw(
-            "DELETE",
-            f"/repos/{owner}/{repo.name}/branches/{repo.default_branch}/protection",
-        )
-        if not delete_response.is_success:
-            raise GhError(
-                error_message(delete_response), status_code=delete_response.status_code
-            )
-
-        detail = "removed branch protection (excluded)"
-        return RepoResult(
-            repo,
-            result_line(repo.name, detail, Status.OK),
-            Status.OK,
-            tag=Tag.UNPROTECTED,
-        )
+        verb = "would remove" if dry_run else "removed"
+        line = result_line(repo.name, f"{verb} protection (excluded)", Status.OK)
+        return RepoResult(repo, line, Status.OK, tag=Tag.UNPROTECTED)
 
     return worker

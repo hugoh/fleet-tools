@@ -836,7 +836,7 @@ async def test_cmd_protection_sync_lists_adopt_renamed_checks_candidates(
     out = capsys.readouterr().out
     assert "Candidates for --adopt-renamed-checks" in out
     assert out.rstrip().endswith(": repo")
-    assert "Would be (with required status checks): 1" in out
+    assert "Would be" not in out
 
 
 async def test_cmd_protection_sync_merges_exclude_list_into_skip(monkeypatch):
@@ -913,9 +913,7 @@ async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
     await repo_admin.cmd_protection_sync(args)
     out = capsys.readouterr().out
     assert "Summary:" in out
-    assert (
-        "Skipped (plan doesn't allow branch protection on private repos): repo" in out
-    )
+    assert "Skipped (private repo, plan disallows protection): 1" in out
 
 
 async def test_cmd_protection_sync_unprotects_excluded_repos_and_reports_them(
@@ -949,7 +947,7 @@ async def test_cmd_protection_sync_unprotects_excluded_repos_and_reports_them(
     args = argparse.Namespace(repos=[], skip=None, dry_run=False, verbose=False)
     await repo_admin.cmd_protection_sync(args)
     out = capsys.readouterr().out
-    assert "Removed branch protection (branch-protection-exclude.yaml): repo" in out
+    assert "Removed protection (excluded): repo" in out
 
 
 # ---------------------------------------------------------------------------
@@ -2291,3 +2289,36 @@ async def test_features_worker_unchanged_when_at_target(monkeypatch):
 def test_features_sync_subcommand_is_registered_in_parser():
     args = repo_admin.build_parser().parse_args(["features", "sync", "--dry-run"])
     assert args.func == repo_admin._features_sync
+
+
+async def test_cmd_protection_sync_prints_nothing_when_nothing_needs_action(
+    monkeypatch, capsys
+):
+    _stub_cmd_protection_sync(
+        monkeypatch,
+        results=[
+            repo_admin.RepoResult(REPO, "repo: ok", Status.OK, tag=None),
+        ],
+    )
+    args = argparse.Namespace(repos=[], skip=None, dry_run=False, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    assert capsys.readouterr().out == ""
+
+
+async def test_cmd_protection_sync_lists_repos_needing_manual_attention(
+    monkeypatch, capsys
+):
+    _stub_cmd_protection_sync(
+        monkeypatch,
+        results=[
+            repo_admin.RepoResult(
+                REPO,
+                "repo: multiple rulesets",
+                Status.LIMITED_UNCHANGED,
+                tag=protection.Tag.ATTENTION,
+            )
+        ],
+    )
+    args = argparse.Namespace(repos=[], skip=None, dry_run=False, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    assert "Needs manual attention: repo" in capsys.readouterr().out
