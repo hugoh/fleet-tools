@@ -7,7 +7,12 @@ on: # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing <package>-vX.Y.Z tag to release (GitHub release and PyPI publish); skips the Conventional-Commit bump. Leave empty for normal use.
+        required: false
+        type: string
 
 concurrency:
   group: release
@@ -28,28 +33,30 @@ jobs:
           fetch-depth: 0
 
       - id: bump
+        if: inputs.tag == ''
         uses: hugoh/cog-bump@934fdc8c1346ff5b3efe52ed63e14c1a4b3825e3 # v0.3.4
         with:
           config: cog.toml
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        if: steps.bump.outputs.tags != ''
+        if: (inputs.tag || steps.bump.outputs.tags) != ''
         with:
           enable-cache: false
 
       # GitHub's --generate-notes lists every PR since the last release of any
       # package; git-cliff keeps only commits that touched this package.
       - name: Create GitHub releases
-        if: steps.bump.outputs.tags != ''
+        if: (inputs.tag || steps.bump.outputs.tags) != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAGS: ${{ steps.bump.outputs.tags }}
+          TAGS: ${{ inputs.tag || steps.bump.outputs.tags }}
           # renovate: datasource=pypi depName=git-cliff
           GIT_CLIFF_VERSION: 2.14.2
         run: |
           set -euo pipefail
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
+            gh release view "$tag" > /dev/null 2>&1 && continue
             pkg="${tag%-v*}"
             from=$(git describe --tags --abbrev=0 --match "${pkg}-v*" "${tag}^" 2>/dev/null \
               || git rev-list --max-parents=0 "$tag" | tail -n 1)
@@ -60,7 +67,7 @@ jobs:
 
       - id: releases
         env:
-          TAGS: ${{ steps.bump.outputs.tags }}
+          TAGS: ${{ inputs.tag || steps.bump.outputs.tags }}
         run: |
           set -euo pipefail
           releases=$(jq -Rnc '[inputs | select(length > 0) | {tag: ., pkg: (split("-v") | .[:-1] | join("-v"))}]' <<< "$TAGS")
