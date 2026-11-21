@@ -153,7 +153,7 @@ def _resolve_ref(repo: str, explicit: str | None) -> str:
             check=True,
         ).stdout.strip()
         sha = subprocess.run(
-            ["gh", "api", f"repos/{repo}/git/ref/tags/{tag}", "--jq", ".object.sha"],
+            ["gh", "api", f"repos/{repo}/commits/{tag}", "--jq", ".sha"],
             capture_output=True,
             text=True,
             check=True,

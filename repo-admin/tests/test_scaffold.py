@@ -282,3 +282,45 @@ def _have(tool: str) -> bool:
     from shutil import which
 
     return which(tool) is not None
+
+
+class _FakeGh:
+    def __init__(self, tag: str = "v1.2.3", sha: str = "c0ffee") -> None:
+        self.tag = tag
+        self.sha = sha
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(cmd)
+        out = self.tag if cmd[1] == "release" else self.sha
+        return subprocess.CompletedProcess(cmd, 0, stdout=out + "\n")
+
+
+def test_resolve_ref_pins_the_commit_not_the_tag_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeGh(tag="v1.14.3", sha="7245906")
+    monkeypatch.setattr(scaffold.subprocess, "run", fake)
+    assert scaffold._resolve_ref("pypa/x", None) == "7245906 # v1.14.3"
+    api = fake.calls[1]
+    assert "repos/pypa/x/commits/v1.14.3" in api
+    assert not any("git/ref/tags" in part for part in api)
+
+
+def test_resolve_ref_returns_explicit_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeGh()
+    monkeypatch.setattr(scaffold.subprocess, "run", fake)
+    assert scaffold._resolve_ref("a/b", "abc # v1") == "abc # v1"
+    assert fake.calls == []
+
+
+def test_resolve_ref_falls_back_to_main_when_gh_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(cmd: list[str], **_: object) -> None:
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(scaffold.subprocess, "run", boom)
+    assert scaffold._resolve_ref("a/b", None) == "main"
