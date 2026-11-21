@@ -3,7 +3,7 @@ name: docs
 permissions:
   contents: read
 
-on: # yamllint disable-line rule:truthy
+on:
   push:
     branches:
       - main

@@ -43,7 +43,7 @@ async def test_minimal_scaffold_writes_baseline(tmp_path: Path) -> None:
     for name in (
         ".editorconfig",
         ".gitignore",
-        ".yamllint",
+        ".ryl.toml",
         "biome.json",
         "hk.pkl",
         "mise.toml",
@@ -51,8 +51,30 @@ async def test_minimal_scaffold_writes_baseline(tmp_path: Path) -> None:
         ".github/workflows/hk.yml",
     ):
         assert (target / name).is_file(), name
+    assert not (target / ".yamllint").exists()
     assert not (target / ".github/workflows/release.yml").exists()
     assert not (target / "action.yml").exists()
+
+
+async def test_workflows_carry_no_yamllint_directives(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, release=True, pages=True)
+    for wf in (target / ".github/workflows").glob("*.yml"):
+        assert "yamllint" not in wf.read_text(), wf
+
+
+async def test_ryl_config_matches_the_fleet_copy(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target)
+    fleet = (scaffold.REPO_ROOT / ".ryl.toml").read_text()
+    assert (target / ".ryl.toml").read_text() == fleet
+
+
+async def test_biome_schema_tracks_canonical_biome_version(tmp_path: Path) -> None:
+    version = scaffold._canonical_tools()["biome"]
+    target = tmp_path / "widget"
+    await _run(target)
+    assert f"/schemas/{version}/schema.json" in (target / "biome.json").read_text()
 
 
 async def test_no_template_markers_leak(tmp_path: Path) -> None:

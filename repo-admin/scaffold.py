@@ -171,9 +171,8 @@ def _context(args: argparse.Namespace, name: str) -> dict[str, object]:
     if args.tests == "python":
         hk_groups.append("python")
     hk_version, hk_config_version = _canonical_hk_versions()
-    tools_block = _tools_block(
-        _canonical_tools(), hk_groups, python_extra=args.tests == "python"
-    )
+    tools = _canonical_tools()
+    tools_block = _tools_block(tools, hk_groups, python_extra=args.tests == "python")
     return {
         "repo_name": name,
         "default_branch": args.default_branch,
@@ -194,6 +193,7 @@ def _context(args: argparse.Namespace, name: str) -> dict[str, object]:
         "hk_version": hk_version,
         "hk_config_version": hk_config_version,
         "tools_block": tools_block,
+        "biome_version": tools["biome"],
         "year": datetime.datetime.now(tz=datetime.UTC).year,
     }
 
