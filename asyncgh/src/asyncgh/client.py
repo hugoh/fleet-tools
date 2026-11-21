@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
 from typing import Any, Self
 
 import httpx2
@@ -55,6 +56,14 @@ class GhError(RuntimeError):
         self.error_type = error_type
 
 
+class GhRateLimitError(GhError):
+    """The primary rate limit is exhausted. Waiting for the reset can take up
+    to an hour, so unlike a secondary limit this is raised rather than
+    retried -- and raised, not returned, so a caller can't mistake the 403 for
+    a plan or permission error.
+    """
+
+
 def _auth_token() -> str:
     """Reads the token `gh` already has -- keychain storage, SSO, and 2FA are
     already solved by `gh auth login`, so this reuses that instead of
@@ -85,6 +94,26 @@ def _is_secondary_rate_limit(response: httpx2.Response) -> bool:
     return response.status_code in (403, 429) and (
         "secondary rate limit" in response.text.lower()
     )
+
+
+def _is_primary_rate_limit(response: httpx2.Response) -> bool:
+    return (
+        response.status_code in (403, 429)
+        and response.headers.get("x-ratelimit-remaining") == "0"
+        and not _is_secondary_rate_limit(response)
+    )
+
+
+def _rate_limit_error(response: httpx2.Response) -> GhRateLimitError:
+    message = "GitHub API rate limit exceeded"
+    try:
+        minutes = max(
+            1, round((int(response.headers["x-ratelimit-reset"]) - time.time()) / 60)
+        )
+        message += f"; resets in {minutes} min"
+    except (KeyError, ValueError):
+        pass
+    return GhRateLimitError(message, status_code=response.status_code)
 
 
 def _is_retryable(response: httpx2.Response) -> bool:
@@ -259,7 +288,17 @@ class GitHubClient:
         Transport errors and transient statuses (429, 5xx) are retried up to
         max_retries times, honouring `Retry-After`. GitHub's writes here are
         idempotent (secret PUTs replace), so retrying any method is safe.
+
+        An exhausted primary rate limit raises GhRateLimitError.
         """
+        response = await self._send_with_retry(method, path, json=json, params=params)
+        if _is_primary_rate_limit(response):
+            raise _rate_limit_error(response)
+        return response
+
+    async def _send_with_retry(
+        self, method: str, path: str, *, json: Any = None, params: dict | None = None
+    ) -> httpx2.Response:
         try:
             async for attempt in stamina.retry_context(
                 on=_should_retry,
