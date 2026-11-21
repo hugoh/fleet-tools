@@ -1393,7 +1393,7 @@ async def test_plan_gated_worker_reports_skip_when_rulesets_also_plan_gated(
     )
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert result.tag == protection.Tag.SKIPPED_NO_PLAN
+    assert result.status == Status.LIMITED_UNCHANGED
     assert "plan disallows protection" in result.line
     assert "would create ruleset" not in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
@@ -1404,7 +1404,7 @@ async def test_plan_gated_worker_apply_skips_when_rulesets_also_plan_gated(monke
         monkeypatch, dry_run=False, contexts=["hk / lint"], ruleset_list_status=403
     )
     result = await worker(REPO)
-    assert result.tag == protection.Tag.SKIPPED_NO_PLAN
+    assert result.status == Status.LIMITED_UNCHANGED
     assert not any(m == "POST" for m, _p, _j in calls)
 
 
@@ -1412,7 +1412,7 @@ async def test_plan_gated_worker_still_skips_when_no_contexts(monkeypatch):
     worker, calls = _plan_gated_ruleset_worker(monkeypatch, dry_run=False, contexts=[])
     result = await worker(REPO)
     assert result.status == Status.LIMITED_UNCHANGED
-    assert result.tag == protection.Tag.SKIPPED_NO_PLAN
+    assert result.status == Status.LIMITED_UNCHANGED
     assert "plan disallows protection" in result.line
     assert not any(m == "POST" for m, _p, _j in calls)
 
@@ -1500,3 +1500,31 @@ async def test_branch_protection_worker_keeps_existing_checks_when_repo_has_no_p
     assert result.status == Status.LIMITED_UNCHANGED
     assert "no PRs yet" in result.line
     assert "PUT" not in calls
+
+
+def test_path_filtered_jobs_come_from_pull_request_paths():
+    docs = [
+        {
+            "name": "SwiftLint",
+            True: {"pull_request": {"paths": ["**.swift"]}, "push": {}},
+            "jobs": {"swiftlint": {"name": "SwiftLint"}},
+        },
+        {
+            "on": {"pull_request": {"paths-ignore": ["docs/**"]}},
+            "jobs": {"tests": {}},
+        },
+        {"on": {"pull_request": None}, "jobs": {"lint": {}}},
+        {"on": {"push": {"paths": ["x"]}}, "jobs": {"pages": {}}},
+    ]
+
+    assert protection._path_filtered_jobs(docs) == {"SwiftLint", "tests"}
+
+
+def test_keep_path_filtered_checks_retains_only_existing_filtered_ones():
+    kept = protection._keep_path_filtered_checks(
+        ["Tests", "check / lint"],
+        ["SwiftLint", "Tests", "gone", "hk / lint"],
+        {"SwiftLint", "hk"},
+    )
+
+    assert kept == ["SwiftLint", "Tests", "check / lint", "hk / lint"]

@@ -31,7 +31,6 @@ class Tag(enum.StrEnum):
 
     ATTENTION = "attention"
     RENAME_CANDIDATE = "rename_candidate"
-    SKIPPED_NO_PLAN = "skipped_no_plan"
     UNPROTECTED = "unprotected"
 
 
@@ -402,6 +401,39 @@ def _push_only_jobs(docs: list[dict]) -> set[str]:
             skipped |= more
         out |= {_job_label(k, jobs[k]) for k in skipped}
     return out
+
+
+def _path_filtered_jobs(docs: list[dict]) -> set[str]:
+    """Names of jobs in workflows whose `pull_request` trigger is path-filtered.
+
+    Such a job reports only on PRs touching matching paths, so its absence from
+    a sampled PR says nothing about whether the check still exists.
+    """
+    out: set[str] = set()
+    for doc in docs:
+        triggers = doc.get("on", doc.get(True))
+        pull_request = (
+            triggers.get("pull_request") if isinstance(triggers, dict) else None
+        )
+        if not isinstance(pull_request, dict) or not (
+            pull_request.get("paths") or pull_request.get("paths-ignore")
+        ):
+            continue
+        jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+        out |= {_job_label(k, job) for k, job in jobs.items()}
+    return out
+
+
+def _keep_path_filtered_checks(
+    contexts: list[str], existing: list[str], path_filtered: set[str]
+) -> list[str]:
+    kept = {
+        check
+        for check in existing
+        if _MATRIX_SUFFIX.sub("", check) in path_filtered
+        or check.split(" / ", 1)[0] in path_filtered
+    }
+    return sorted(set(contexts) | kept)
 
 
 def _finalize_contexts(
@@ -804,9 +836,7 @@ def _attention_result(repo: Repo, detail: str) -> RepoResult:
 def _plan_gated_result(repo: Repo) -> RepoResult:
     status = Status.LIMITED_UNCHANGED
     detail = "private repo, plan disallows protection"
-    return RepoResult(
-        repo, result_line(repo.name, detail, status), status, tag=Tag.SKIPPED_NO_PLAN
-    )
+    return RepoResult(repo, result_line(repo.name, detail, status), status)
 
 
 async def _ruleset_creation_blocker(owner: str, repo: Repo) -> RepoResult | None:
@@ -850,9 +880,10 @@ async def _create_protection_ruleset(
 
 async def _sample_contexts(
     owner: str, repo: Repo, pr_head_shas: list[str]
-) -> list[str]:
+) -> tuple[list[str], set[str]]:
+    """`(sampled contexts, path-filtered job names)`."""
     docs = await _workflow_docs(owner, repo.name, repo.default_branch)
-    return await _check_run_contexts(
+    contexts = await _check_run_contexts(
         owner,
         repo.name,
         pr_head_shas,
@@ -860,6 +891,7 @@ async def _sample_contexts(
         _gate_covered_jobs(docs),
         _push_only_jobs(docs),
     )
+    return contexts, _path_filtered_jobs(docs)
 
 
 @dataclass
@@ -966,7 +998,11 @@ async def _plan_protection(
     applies without gating on specific checks.
     """
     pr_head_shas = await _recent_pr_head_shas(owner, repo.name)
-    sampled = await _sample_contexts(owner, repo, pr_head_shas) if pr_head_shas else []
+    sampled, path_filtered = (
+        await _sample_contexts(owner, repo, pr_head_shas)
+        if pr_head_shas
+        else ([], set())
+    )
     classic, plan_gated = await _classic_protection(owner, repo)
     repo_rulesets, org_rulesets = await _matching_rulesets(
         owner, repo.name, repo.default_branch
@@ -996,6 +1032,11 @@ async def _plan_protection(
         plan.notes += reconciled.notes
         plan.rename_candidate = reconciled.rename_candidate
         plan.stale_retained = reconciled.rename_candidate
+
+    if sampled:
+        plan.contexts = _keep_path_filtered_checks(
+            plan.contexts, plan.existing, path_filtered
+        )
 
     if not plan.contexts:
         plan.notes.append(

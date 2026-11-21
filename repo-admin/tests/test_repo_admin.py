@@ -892,30 +892,6 @@ async def test_cmd_protection_sync_passes_verbose_to_run_parallel(monkeypatch):
     assert seen["verbose"] is True
 
 
-async def test_cmd_protection_sync_dry_run_reports_plan_gated_skips(
-    monkeypatch, capsys
-):
-    # A dry run must surface which private repos it can't protect due to plan
-    # limits -- previously this summary only printed on a real apply, so a
-    # dry run gave no indication a repo was silently unfixable.
-    _stub_cmd_protection_sync(
-        monkeypatch,
-        results=[
-            repo_admin.RepoResult(
-                REPO,
-                "repo: skipped",
-                Status.LIMITED_UNCHANGED,
-                tag=protection.Tag.SKIPPED_NO_PLAN,
-            )
-        ],
-    )
-    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
-    await repo_admin.cmd_protection_sync(args)
-    out = capsys.readouterr().out
-    assert "Summary:" in out
-    assert "Skipped (private repo, plan disallows protection): 1" in out
-
-
 async def test_cmd_protection_sync_unprotects_excluded_repos_and_reports_them(
     monkeypatch, capsys
 ):
