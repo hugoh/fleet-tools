@@ -752,10 +752,6 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
         summary.append(f"Needs manual attention: {' '.join(attention)}")
     if renames := _tagged(results, Tag.RENAME_CANDIDATE):
         summary.append(f"Candidates for --adopt-renamed-checks: {' '.join(renames)}")
-    if skipped := _tagged(results, Tag.SKIPPED_NO_PLAN):
-        summary.append(
-            f"Skipped (private repo, plan disallows protection): {len(skipped)}"
-        )
     if removed := _tagged(unprotect_results, Tag.UNPROTECTED):
         verb = "Would remove" if args.dry_run else "Removed"
         summary.append(f"{verb} protection (excluded): {' '.join(removed)}")
