@@ -1528,3 +1528,12 @@ def test_keep_path_filtered_checks_retains_only_existing_filtered_ones():
     )
 
     assert kept == ["SwiftLint", "Tests", "check / lint", "hk / lint"]
+
+
+def test_finalize_contexts_drops_reusable_caller_checks_covered_by_a_gate():
+    # `ci-gate` needs the `hk` caller job, whose check is reported as "hk / lint".
+    contexts = {"hk / lint", "ci-gate", "semantic-pr / semantic-pr"}
+    assert protection._finalize_contexts(contexts, {"hk"}, set()) == [
+        "ci-gate",
+        "semantic-pr / semantic-pr",
+    ]
