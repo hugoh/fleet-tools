@@ -1580,3 +1580,50 @@ async def test_sample_contexts_reads_workflows_at_the_pr_head(monkeypatch):
     assert contexts == ["ci-gate"]
     assert seen["covered"] == {"hk", "link-check"}
     assert seen["push_only"] == {"pages"}
+
+
+async def test_worker_records_the_audit_with_the_contexts_it_decided_on(monkeypatch):
+    async def fake_shas(owner, name):
+        return []
+
+    async def fake_api_raw(method, *a, **k):
+        return _FakeResponse(404) if method == "GET" else _FakeResponse(200)
+
+    seen = {}
+
+    async def fake_audit(owner, repo, required):
+        seen["required"] = required
+        return protection.RepoAudit(ungated=["release"])
+
+    monkeypatch.setattr(protection, "_recent_pr_head_shas", fake_shas)
+    monkeypatch.setattr(protection, "api_raw", fake_api_raw)
+    monkeypatch.setattr(protection, "audit_repo", fake_audit)
+    audits = {}
+    worker = protection.make_branch_protection_worker(
+        owner="hugoh", dry_run=True, audit=audits
+    )
+    await worker(REPO)
+    assert audits == {"repo": protection.RepoAudit(ungated=["release"])}
+    assert seen["required"] == []
+
+
+async def test_a_failing_audit_does_not_fail_the_sync(monkeypatch):
+    async def fake_shas(owner, name):
+        return []
+
+    async def fake_api_raw(method, *a, **k):
+        return _FakeResponse(404) if method == "GET" else _FakeResponse(200)
+
+    async def broken_audit(owner, repo, required):
+        raise protection.GhError("boom", status_code=500)
+
+    monkeypatch.setattr(protection, "_recent_pr_head_shas", fake_shas)
+    monkeypatch.setattr(protection, "api_raw", fake_api_raw)
+    monkeypatch.setattr(protection, "audit_repo", broken_audit)
+    audits = {}
+    worker = protection.make_branch_protection_worker(
+        owner="hugoh", dry_run=True, audit=audits
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert audits == {}

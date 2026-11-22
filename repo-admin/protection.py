@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
 import yaml
+from audit import RepoAudit, audit_workflows, red_workflows
 from lib import (
     GhError,
     Repo,
@@ -1165,20 +1166,50 @@ async def _put_classic_protection(owner: str, repo: Repo, contexts: list[str]) -
     return True
 
 
+async def audit_repo(owner: str, repo: Repo, required: list[str]) -> RepoAudit:
+    """What `protection sync` reports beyond the checks it requires."""
+    docs = await _workflow_docs(owner, repo.name, repo.default_branch)
+    report = audit_workflows(docs, required)
+    runs = await api_json(
+        "GET",
+        f"/repos/{owner}/{repo.name}/actions/runs",
+        params={
+            "branch": repo.default_branch,
+            "status": "completed",
+            "per_page": "40",
+        },
+    )
+    workflows = await api_json(
+        "GET",
+        f"/repos/{owner}/{repo.name}/actions/workflows",
+        params={"per_page": "100"},
+    )
+    active = {w["id"] for w in workflows.get("workflows", []) if w["state"] == "active"}
+    report.red = red_workflows(runs.get("workflow_runs", []), active)
+    return report
+
+
 def make_branch_protection_worker(
     owner: str,
     dry_run: bool,
     clear_stale_checks: bool = False,
     adopt_renamed_checks: bool = False,
+    audit: dict[str, RepoAudit] | None = None,
 ):
     async def worker(repo: Repo) -> RepoResult:
         async def fetch() -> _Plan:
-            return await _plan_protection(
+            plan = await _plan_protection(
                 owner,
                 repo,
                 clear_stale_checks=clear_stale_checks,
                 adopt_renamed_checks=adopt_renamed_checks,
             )
+            if audit is not None:
+                try:
+                    audit[repo.name] = await audit_repo(owner, repo, plan.contexts)
+                except GhError:
+                    pass
+            return plan
 
         def plan_result(plan: _Plan) -> RepoResult:
             return plan.final or _result(plan, applied=False)
