@@ -1006,6 +1006,7 @@ async def _plan_protection(
     *,
     clear_stale_checks: bool,
     adopt_renamed_checks: bool,
+    ignored_checks: frozenset[str] = frozenset(),
 ) -> _Plan:
     """Reads a repo's state and decides what protection it should end up with.
 
@@ -1066,6 +1067,7 @@ async def _plan_protection(
             plan.stale_retained = True
             plan.notes.append("kept existing (--clear-stale-checks to drop)")
 
+    plan.contexts = [name for name in plan.contexts if name not in ignored_checks]
     plan.final = _unmanageable_rulesets(plan)
     return plan
 
@@ -1195,6 +1197,7 @@ def make_branch_protection_worker(
     clear_stale_checks: bool = False,
     adopt_renamed_checks: bool = False,
     audit: dict[str, RepoAudit] | None = None,
+    ignored_checks: dict[str, set[str]] | None = None,
 ):
     async def worker(repo: Repo) -> RepoResult:
         async def fetch() -> _Plan:
@@ -1203,6 +1206,7 @@ def make_branch_protection_worker(
                 repo,
                 clear_stale_checks=clear_stale_checks,
                 adopt_renamed_checks=adopt_renamed_checks,
+                ignored_checks=frozenset((ignored_checks or {}).get(repo.name, ())),
             )
             if audit is not None:
                 try:

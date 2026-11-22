@@ -176,6 +176,22 @@ def test_default_branch_protection_exclude_env_override(tmp_path, monkeypatch):
     assert lib.default_branch_protection_exclude() == {"other-repo", "another-repo"}
 
 
+def test_default_required_check_ignore_maps_repo_to_check_names(tmp_path, monkeypatch):
+    ignore_file = tmp_path / "required-check-ignore.yaml"
+    ignore_file.write_text(
+        "# housekeeping jobs\nhomebrew-tap:\n  - update-behind-prs\n"
+    )
+    monkeypatch.setattr(lib, "REQUIRED_CHECK_IGNORE_FILE", ignore_file)
+    assert lib.default_required_check_ignore() == {
+        "homebrew-tap": {"update-behind-prs"}
+    }
+
+
+def test_default_required_check_ignore_absent_file_yields_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(lib, "REQUIRED_CHECK_IGNORE_FILE", tmp_path / "missing.yaml")
+    assert lib.default_required_check_ignore() == {}
+
+
 def test_default_include_forks_reads_yaml_list(tmp_path, monkeypatch):
     forks_file = tmp_path / "forks-include.yaml"
     forks_file.write_text("# maintained forks\n- Withings2Garmin\n")

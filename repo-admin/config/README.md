@@ -1,7 +1,8 @@
 # config/
 
 The fleet config data (`pages-domains.yaml`, `forks-include.yaml`,
-`branch-protection-exclude.yaml`, `secrets.enc.yaml`, `variables.yaml`,
+`branch-protection-exclude.yaml`, `required-check-ignore.yaml`,
+`secrets.enc.yaml`, `variables.yaml`,
 `variables.enc.yaml`, `.sops.yaml`) is **not kept here** — it lives in a
 separate repo and is pointed at with `REPO_ADMIN_CONFIG_DIR`, which a wrapper
 in that repo exports before invoking this CLI.

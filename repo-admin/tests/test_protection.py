@@ -492,6 +492,7 @@ def _branch_protection_worker(
     org_rulesets=(),
     base_checks=(),
     adopt_renamed_checks=False,
+    ignored_checks=None,
 ):
     async def fake_shas(owner, name):
         return list(shas)
@@ -543,6 +544,7 @@ def _branch_protection_worker(
         dry_run=dry_run,
         clear_stale_checks=clear_stale_checks,
         adopt_renamed_checks=adopt_renamed_checks,
+        ignored_checks=ignored_checks,
     )
     return (worker, calls) if track_calls else worker
 
@@ -621,6 +623,49 @@ async def test_branch_protection_worker_dry_run_unchanged_line(monkeypatch):
     result = await worker(REPO)
     assert result.status == Status.UNCHANGED
     assert result.line == f"{'repo':<30} unchanged: 2 required checks"
+
+
+async def test_branch_protection_worker_ignored_check_is_not_required(monkeypatch):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["sha"],
+        contexts=["hk / lint", "update-behind-prs"],
+        current=_protection_state(contexts=["hk / lint"]),
+        ignored_checks={"repo": {"update-behind-prs"}},
+    )
+    result = await worker(REPO)
+    assert result.status == Status.UNCHANGED
+    assert result.line == f"{'repo':<30} unchanged: 1 required check"
+
+
+async def test_branch_protection_worker_drops_ignored_check_already_required(
+    monkeypatch,
+):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["sha"],
+        contexts=["hk / lint", "update-behind-prs"],
+        current=_protection_state(contexts=["hk / lint", "update-behind-prs"]),
+        ignored_checks={"repo": {"update-behind-prs"}},
+    )
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert result.line == f"{'repo':<30} would update: -update-behind-prs"
+
+
+async def test_branch_protection_worker_ignore_list_is_per_repo(monkeypatch):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["sha"],
+        contexts=["hk / lint", "update-behind-prs"],
+        current=_protection_state(contexts=["hk / lint"]),
+        ignored_checks={"other-repo": {"update-behind-prs"}},
+    )
+    result = await worker(REPO)
+    assert result.line == f"{'repo':<30} would update: +update-behind-prs"
 
 
 async def test_branch_protection_worker_dry_run_shows_old_contexts(monkeypatch):
