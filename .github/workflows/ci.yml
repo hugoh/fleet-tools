@@ -1,12 +1,12 @@
-name: release
+name: ci
 
-permissions:
-  contents: read
+permissions: {}
 
 on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:
@@ -15,11 +15,34 @@ on:
         type: string
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded PR runs; never cancel a push-to-main run mid-release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  hk:
+    uses: hugoh/gh-workflows/.github/workflows/hk.yml@e16fb522310fbdff89aab38e3d16d13ee5cff11e # v1.40.20
+    permissions:
+      contents: read
+      packages: read
+      statuses: write
+
+  # The single required status check, and all that release waits on. hk's `ci`
+  # profile already runs every package's tests.
+  ci-gate:
+    if: always()
+    needs: [hk]
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+
   release:
+    needs: ci-gate
+    if: github.event_name != 'pull_request'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
