@@ -74,6 +74,7 @@ from dataclasses import dataclass
 from getpass import getpass
 
 import activity
+import audit
 import lib
 import protection
 import scaffold
@@ -715,6 +716,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
     owner = await default_owner()
     exclude = default_branch_protection_exclude()
     repos = await list_repos_for_args(args, extra_skip=exclude)
+    audits: dict[str, audit.RepoAudit] = {}
     results = await run_parallel(
         repos,
         protection.make_branch_protection_worker(
@@ -722,6 +724,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             args.dry_run,
             clear_stale_checks=getattr(args, "clear_stale_checks", False),
             adopt_renamed_checks=getattr(args, "adopt_renamed_checks", False),
+            audit=audits,
         ),
         verbose=args.verbose,
         dry_run=args.dry_run,
@@ -755,6 +758,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
     if removed := _tagged(unprotect_results, Tag.UNPROTECTED):
         verb = "Would remove" if args.dry_run else "Removed"
         summary.append(f"{verb} protection (excluded): {' '.join(removed)}")
+    summary.extend(audit.summary_lines(audits))
     if summary:
         print()
         print("Summary:")

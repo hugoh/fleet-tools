@@ -109,6 +109,15 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   `config/branch-protection-exclude.yaml` (e.g. `homebrew-tap`, which has no
   CI/PR workflow) are skipped entirely — no classic protection, no ruleset;
   override per-run with `GH_BRANCH_PROTECTION_EXCLUDE`.
+  The closing summary also audits each repo's workflows and default branch
+  (read-only, changes nothing): a release job not behind any gate job; a
+  release gated only by `needs:` on the checks (no `ci-gate`, informational);
+  a `ci-gate` that is not a required check; jobs in the `ci-gate` workflow
+  that are neither covered by it nor downstream of it; and workflows whose
+  latest run on the default branch failed (workflows whose file was deleted,
+  and GitHub-managed ones such as CodeQL, are ignored). Reusable workflows that
+  only run via `workflow_call` are not audited: their caller gates them. It
+  costs a few extra API calls per repo.
 - **`security sync [--dry-run]`** — enables Dependabot vulnerability
   alerts (all repos, free) and disables Dependabot security updates (no
   Dependabot PRs), plus secret

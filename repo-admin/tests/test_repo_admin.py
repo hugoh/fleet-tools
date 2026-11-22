@@ -2324,3 +2324,24 @@ async def test_cmd_sync_stops_after_rate_limit_error(monkeypatch, capsys):
     assert await repo_admin.cmd_sync(args) == 1
     assert ran == ["merge"]
     assert capsys.readouterr().err.count("rate limit") == 1
+
+
+async def test_cmd_protection_sync_prints_the_audit_lines(monkeypatch, capsys):
+    _stub_cmd_protection_sync(monkeypatch)
+
+    def fake_worker(owner, dry_run, **kwargs):
+        kwargs["audit"]["repo"] = repo_admin.audit.RepoAudit(
+            ungated=["release"], red=["ci"]
+        )
+
+        async def worker(repo):
+            raise AssertionError("run_parallel is stubbed")
+
+        return worker
+
+    monkeypatch.setattr(protection, "make_branch_protection_worker", fake_worker)
+    args = argparse.Namespace(repos=[], skip=None, dry_run=True, verbose=False)
+    await repo_admin.cmd_protection_sync(args)
+    out = capsys.readouterr().out
+    assert "Release not behind a gate: repo (release)" in out
+    assert "Red default branch: repo (ci)" in out
