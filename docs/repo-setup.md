@@ -73,7 +73,7 @@ on:
   pull_request:
 permissions: {}
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-caller-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   hk:

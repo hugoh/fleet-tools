@@ -15,7 +15,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-caller-${{ github.event.pull_request.number || github.ref }}
   # Cancel superseded PR runs; never cancel a push-to-main run mid-release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
