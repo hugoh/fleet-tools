@@ -69,7 +69,10 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   gates. A `hk / lint`-style check produced by a job that calls a reusable
   workflow via `uses:` is recognised as the repo's own (matched by job
   name against the workflow files), so a C2-migrated repo no longer keeps a
-  stale `check` context. GitHub sometimes reports that check bare (`lint`)
+  stale `check` context. A `*-gate` job (such as `ci-gate`, an aggregator
+  over `needs:`) is required in place of the jobs it lists, including a
+  caller job's `<job> / <inner>` checks (`hk / lint`). GitHub sometimes
+  reports that check bare (`lint`)
   on one run and prefixed (`hk / lint`) on another; when a sampled context
   is only the prefix-stripped/-added form of one already required, the
   existing spelling is kept — unless recent default-branch commits show the

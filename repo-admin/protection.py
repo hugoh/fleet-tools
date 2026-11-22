@@ -60,6 +60,10 @@ class Tag(enum.StrEnum):
 # shouldn't be able to block merges as a side effect of having run once on a
 # PR.
 #
+# A `*-gate` job (e.g. `ci-gate`: `if: always()`, `needs:` every job that must pass) is the
+# stable required check; the jobs it lists in `needs:` are dropped, including the
+# `<job> / <inner>` checks of a caller job that uses a reusable workflow.
+#
 # Even under the "github-actions" app, GitHub-managed setups post checks the
 # repo can't edit: CodeQL default setup runs as a synthetic "CodeQL" workflow
 # ("Analyze (...)" jobs) and Advanced Security posts a "github-advanced-security"
@@ -448,10 +452,14 @@ def _finalize_contexts(
         if _MATRIX_SUFFIX.sub("", name) not in (push_only_jobs or set())
     }
     if any(_GATE_JOB.search(name) for name in contexts):
+        covered = gate_covered_jobs or set()
+        # A covered job that calls a reusable workflow reports "<job> / <inner>"
+        # (e.g. "hk / lint"), so match the leading segment as well as the whole name.
         contexts = {
             name
             for name in contexts
-            if _MATRIX_SUFFIX.sub("", name) not in (gate_covered_jobs or set())
+            if _MATRIX_SUFFIX.sub("", name) not in covered
+            and _MATRIX_SUFFIX.sub("", name).split(" / ", 1)[0] not in covered
         }
     return sorted(contexts)
 
