@@ -2,7 +2,8 @@
 
 One-shot scaffold, not an ongoing sync: it writes the shared dev-tooling files
 (hk.pkl, mise.toml, .renovaterc.json, editor/lint config) plus the workflow
-callers the feature flags ask for, then leaves Renovate to keep the version
+callers the feature flags ask for (one ci.yml: hk, a ci-gate job and, with
+--release, the release jobs behind that gate), then leaves Renovate to keep the version
 lines current. It never runs ``copier update``.
 
 Idempotent: an existing directory is fine, existing files are left alone
@@ -13,7 +14,7 @@ Usage:
       [--rerun-transient] [--tests {none,python}] [--shell]
       [--apt-packages "pkg ..."] [--pre-hk CMD] [--default-branch B]
       [--gh-workflows-ref REF] [--pypi-publish-ref REF]
-      [--rerun-transient-ref REF] [--pages-dir DIR]
+      [--rerun-transient-ref REF] [--alls-green-ref REF] [--pages-dir DIR]
       [--pages-build-cmd CMD] [--watch-workflows "[CI, hk]"]
       [--force] [--no-pin] [--dry-run]
 """
@@ -183,7 +184,9 @@ def _context(args: argparse.Namespace, name: str) -> dict[str, object]:
         "repo_name": name,
         "default_branch": args.default_branch,
         "gh_workflows_ref": _resolve_ref("hugoh/gh-workflows", args.gh_workflows_ref),
+        "release": bool(args.release),
         "pypi": bool(args.pypi),
+        "alls_green_ref": _resolve_ref("re-actors/alls-green", args.alls_green_ref),
         "pypi_publish_ref": (
             _resolve_ref("pypa/gh-action-pypi-publish", args.pypi_publish_ref)
             if args.pypi
@@ -386,6 +389,10 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
         "--pages-build-cmd",
         default="mise run pages-build",
         help="build command (with --pages)",
+    )
+    p.add_argument(
+        "--alls-green-ref",
+        help="re-actors/alls-green ref for the ci-gate job (default: latest release)",
     )
     p.add_argument(
         "--watch-workflows",

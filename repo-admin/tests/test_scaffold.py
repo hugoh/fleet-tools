@@ -13,6 +13,7 @@ def _args(path: Path, **overrides: object) -> argparse.Namespace:
         "release": False,
         "pypi": False,
         "pypi_publish_ref": "abc1234 # v1.99.0",
+        "alls_green_ref": "feed123 # v1.9.9",
         "pages": False,
         "action": False,
         "rerun_transient": False,
@@ -50,10 +51,11 @@ async def test_minimal_scaffold_writes_baseline(tmp_path: Path) -> None:
         "hk.pkl",
         "mise.toml",
         ".renovaterc.json",
-        ".github/workflows/hk.yml",
+        ".github/workflows/ci.yml",
     ):
         assert (target / name).is_file(), name
     assert not (target / ".yamllint").exists()
+    assert not (target / ".github/workflows/hk.yml").exists()
     assert not (target / ".github/workflows/release.yml").exists()
     assert not (target / "action.yml").exists()
 
@@ -131,7 +133,7 @@ async def test_action_flag_adds_renovate_rule_and_major_tag(tmp_path: Path) -> N
         "github>hugoh/renovate-config//presets/action-file"
         in (target / ".renovaterc.json").read_text()
     )
-    assert "major-tag: true" in (target / ".github/workflows/release.yml").read_text()
+    assert "major-tag: true" in (target / ".github/workflows/ci.yml").read_text()
     assert (target / "action.yml").is_file()
 
 
@@ -140,7 +142,7 @@ async def test_pypi_implies_release_and_adds_a_trusted_publish_job(
 ) -> None:
     target = tmp_path / "widget"
     await _run(target, pypi=True)
-    release = (target / ".github/workflows/release.yml").read_text()
+    release = (target / ".github/workflows/ci.yml").read_text()
     assert "  publish-pypi:" in release
     assert "needs: release" in release
     assert "needs.release.outputs.tag != ''" in release
@@ -156,7 +158,7 @@ async def test_publish_job_has_only_the_oidc_permission(tmp_path: Path) -> None:
     yaml = pytest.importorskip("yaml")
     target = tmp_path / "widget"
     await _run(target, pypi=True)
-    workflow = yaml.safe_load((target / ".github/workflows/release.yml").read_text())
+    workflow = yaml.safe_load((target / ".github/workflows/ci.yml").read_text())
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["release"]["permissions"] == {"contents": "write"}
     assert workflow["jobs"]["publish-pypi"]["permissions"] == {"id-token": "write"}
@@ -165,7 +167,7 @@ async def test_publish_job_has_only_the_oidc_permission(tmp_path: Path) -> None:
 async def test_release_without_pypi_publishes_nothing(tmp_path: Path) -> None:
     target = tmp_path / "widget"
     await _run(target, release=True)
-    release = (target / ".github/workflows/release.yml").read_text()
+    release = (target / ".github/workflows/ci.yml").read_text()
     assert "publish-pypi" not in release
     assert "pypi" not in (target / "mise.toml").read_text()
     assert "package-check" not in (target / "hk.pkl").read_text()
@@ -210,13 +212,13 @@ async def test_targeted_force_overwrites_only_named_paths(tmp_path: Path) -> Non
     target = tmp_path / "widget"
     await _run(target, release=True)
     (target / "hk.pkl").write_text("# keep me\n")
-    (target / ".github/workflows/hk.yml").write_text("# stale caller\n")
+    (target / ".github/workflows/ci.yml").write_text("# stale caller\n")
 
-    await _run(target, release=True, force=[".github/workflows/hk.yml"])
+    await _run(target, release=True, force=[".github/workflows/ci.yml"])
     assert (target / "hk.pkl").read_text() == "# keep me\n"
-    assert "stale caller" not in (target / ".github/workflows/hk.yml").read_text()
+    assert "stale caller" not in (target / ".github/workflows/ci.yml").read_text()
     assert (
-        "uses: hugoh/gh-workflows" in (target / ".github/workflows/hk.yml").read_text()
+        "uses: hugoh/gh-workflows" in (target / ".github/workflows/ci.yml").read_text()
     )
 
 
@@ -247,8 +249,7 @@ async def test_dry_run_leaves_existing_directory_untouched(tmp_path: Path) -> No
 async def test_default_branch_flows_into_workflows(tmp_path: Path) -> None:
     target = tmp_path / "widget"
     await _run(target, default_branch="trunk", release=True)
-    assert "- trunk" in (target / ".github/workflows/hk.yml").read_text()
-    assert "- trunk" in (target / ".github/workflows/release.yml").read_text()
+    assert "- trunk" in (target / ".github/workflows/ci.yml").read_text()
 
 
 async def test_rendered_workflows_are_valid_yaml(tmp_path: Path) -> None:
@@ -359,3 +360,54 @@ def test_rendered_hk_pkl_loads(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _ci(target: Path) -> dict:
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load((target / ".github/workflows/ci.yml").read_text())
+
+
+async def test_ci_has_a_gate_over_hk_pinned_to_alls_green(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target)
+    gate = _ci(target)["jobs"]["ci-gate"]
+    assert gate["needs"] == ["hk"]
+    assert gate["if"] == "always()"
+    assert gate["permissions"] == {}
+    (step,) = gate["steps"]
+    assert step["uses"] == "re-actors/alls-green@feed123"
+    assert step["with"] == {"jobs": "${{ toJSON(needs) }}"}
+
+
+async def test_without_release_ci_is_just_hk_and_the_gate(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target)
+    assert list(_ci(target)["jobs"]) == ["hk", "ci-gate"]
+
+
+async def test_release_waits_on_the_gate_and_only_runs_on_push(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, release=True)
+    jobs = _ci(target)["jobs"]
+    assert list(jobs) == ["hk", "ci-gate", "release"]
+    assert jobs["release"]["needs"] == "ci-gate"
+    assert jobs["release"]["if"] == "github.event_name == 'push'"
+    assert "ci-gate" not in jobs["ci-gate"]["needs"]
+    assert "release" not in jobs["ci-gate"]["needs"]
+
+
+async def test_publish_is_downstream_of_release_not_the_gate(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, pypi=True)
+    jobs = _ci(target)["jobs"]
+    assert jobs["publish-pypi"]["needs"] == "release"
+    assert jobs["ci-gate"]["needs"] == ["hk"]
+
+
+async def test_release_is_never_a_standalone_workflow(tmp_path: Path) -> None:
+    target = tmp_path / "widget"
+    await _run(target, pypi=True, action=True)
+    workflows = {p.name for p in (target / ".github/workflows").glob("*.yml")}
+    assert "release.yml" not in workflows
+    assert "hk.yml" not in workflows
+    assert {"ci.yml", "semantic-pr.yml"} <= workflows
