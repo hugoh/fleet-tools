@@ -137,6 +137,7 @@ def _config_dir() -> Path:
 CONFIG_DIR = _config_dir()
 PAGES_DOMAINS_FILE = CONFIG_DIR / "pages-domains.yaml"
 BRANCH_PROTECTION_EXCLUDE_FILE = CONFIG_DIR / "branch-protection-exclude.yaml"
+REQUIRED_CHECK_IGNORE_FILE = CONFIG_DIR / "required-check-ignore.yaml"
 FORKS_INCLUDE_FILE = CONFIG_DIR / "forks-include.yaml"
 FEATURES_FILE = CONFIG_DIR / "features.yaml"
 SECRETS_ENC_FILE = CONFIG_DIR / "secrets.enc.yaml"
@@ -198,6 +199,15 @@ def default_branch_protection_exclude() -> set[str]:
     if env_value is not None:
         return as_set(env_value) or set()
     return _yaml_name_set(BRANCH_PROTECTION_EXCLUDE_FILE)
+
+
+def default_required_check_ignore() -> dict[str, set[str]]:
+    """Check names never to require, per repo, read from required-check-ignore.yaml
+    (a YAML mapping of repo name to a list of check names). For housekeeping jobs
+    that post PR checks without gating merges.
+    """
+    raw = _load_yaml(REQUIRED_CHECK_IGNORE_FILE) or {}
+    return {repo: set(checks or []) for repo, checks in raw.items()}
 
 
 def default_pages_domains() -> dict[str, str]:

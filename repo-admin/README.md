@@ -106,9 +106,12 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   classic protection has no bypass. A plan-gated repo with nothing to sample yet
   is still just reported, as is one that already has a branch ruleset without a
   checks rule (add the gate there by hand). Repos listed in
-  `config/branch-protection-exclude.yaml` (e.g. `homebrew-tap`, which has no
-  CI/PR workflow) are skipped entirely — no classic protection, no ruleset;
-  override per-run with `GH_BRANCH_PROTECTION_EXCLUDE`.
+  `config/branch-protection-exclude.yaml` are skipped entirely — no classic
+  protection, no ruleset; override per-run with `GH_BRANCH_PROTECTION_EXCLUDE`.
+  To keep a repo's protection but not require one of its PR checks (e.g. a
+  housekeeping job that posts a check without gating merges), list the check
+  under that repo in `config/required-check-ignore.yaml` (a mapping of repo name
+  to check names); it is dropped from the required set on every run.
   The closing summary also audits each repo's workflows and default branch
   (read-only, changes nothing): a release job not behind any gate job; a
   release gated only by `needs:` on the checks (no `ci-gate`, informational);
