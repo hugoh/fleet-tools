@@ -356,7 +356,8 @@ def _job_label(key: str, job: dict) -> str:
 
 
 _NON_PR_EVENT = re.compile(
-    r"(github\.)?event_name\s*==\s*'(push|workflow_dispatch|schedule)'"
+    r"(github\.)?event_name\s*(==\s*'(push|workflow_dispatch|schedule)'"
+    r"|!=\s*'pull_request')"
 )
 
 
