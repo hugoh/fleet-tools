@@ -1,0 +1,87 @@
+---
+name: ci
+
+on:
+  push:
+    branches:
+      - << default_branch >>
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-caller-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded PR runs; never cancel a push-to-default-branch run mid-release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  hk:
+    uses: hugoh/gh-workflows/.github/workflows/hk.yml@<< gh_workflows_ref >>
+    permissions:
+      contents: read
+      packages: read
+      statuses: write
+<% if pre_hk or apt_packages %>
+    with:
+<% if pre_hk %>
+      pre-hk: << pre_hk >>
+<% endif %>
+<% if apt_packages %>
+      apt-packages: << apt_packages >>
+<% endif %>
+<% endif %>
+
+  # The single required status check<% if release %>, and the only thing `release` waits for<% endif %>.
+  # Every job that must pass before merging<% if release %> or releasing<% endif %> goes in `needs`;
+  # jobs that only run after it are downstream and must not be listed here.
+  # hk's `ci` profile already runs the repo's tests.
+  ci-gate:
+    if: always()
+    needs: [hk]
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: re-actors/alls-green@<< alls_green_ref >>
+        with:
+          jobs: ${{ toJSON(needs) }}
+<% if release %>
+
+  release:
+    needs: ci-gate
+    if: github.event_name == 'push'
+    uses: hugoh/gh-workflows/.github/workflows/release.yml@<< gh_workflows_ref >>
+    permissions:
+      contents: write
+<% if action %>
+    with:
+      major-tag: true
+<% endif %>
+<% if pypi %>
+
+  publish-pypi:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.tag }}
+
+      - uses: hugoh/gh-workflows/setup@<< gh_workflows_ref >>
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@<< pypi_publish_ref >>
+        with:
+          skip-existing: true
+<% endif %>
+<% endif %>

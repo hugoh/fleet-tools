@@ -27,8 +27,7 @@ Run from `fleet-tools/`:
 
 | File | Purpose | Notes |
 |---|---|---|
-| `.github/workflows/hk.yml` | lint / conventional-commit check | thin caller of `hugoh/gh-workflows/.github/workflows/hk.yml` (inputs: `pre-hk`, `apt-packages`, `fetch-depth`) |
-| `.github/workflows/release.yml` | tag + GitHub release | thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`hugoh/cog-bump` + `gh release create`); with `--pypi`, also a `publish-pypi` job (trusted publishing, see below); **omit** if the repo isn't released |
+| `.github/workflows/ci.yml` | lint / conventional-commit check, the `ci-gate` job and (with `--release`) tag + GitHub release | `hk` is a thin caller of `hugoh/gh-workflows/.github/workflows/hk.yml` (inputs: `pre-hk`, `apt-packages`, `fetch-depth`); `ci-gate` aggregates every job that must pass with [`re-actors/alls-green`](https://github.com/re-actors/alls-green); `release` is a thin caller of `hugoh/gh-workflows/.github/workflows/release.yml` (`hugoh/cog-bump` + `gh release create`) that `needs: ci-gate`; with `--pypi`, also a `publish-pypi` job (trusted publishing, see below); **omit the release job** if the repo isn't released |
 | `.github/workflows/rerun-transient-failures.yml` | retry transient CI failures | optional; `workflow_run` trigger → [`hugoh/rerun-transient-failures`](https://github.com/hugoh/rerun-transient-failures) |
 | `.renovaterc.json` | dependency updates | `{"extends": ["github>hugoh/renovate-config"]}` — nothing else unless the repo needs an override |
 | `hk.pkl` | lint ruleset | `amends "package://github.com/hugoh/hk-config/..."` |
@@ -61,16 +60,21 @@ resolves to the latest release; third-party actions in them (`actions/checkout`
 etc.) are floating-major seeds that the scaffold's `pinact run` step pins in
 the new repo before first commit.
 
-### Standard caller shapes
+### Standard `ci.yml`
 
-`hk.yml`:
+One workflow holds lint, the gate and the release, so release can wait on the
+gate. `ci-gate` is the single required status check; `release` (and anything
+after it) is downstream of it and is not listed in its `needs`.
 
 ```yaml
-name: hk
+name: ci
 on:
   push: { branches: [main] }
   pull_request:
 permissions: {}
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   hk:
     uses: hugoh/gh-workflows/.github/workflows/hk.yml@<pinned-sha>
@@ -78,24 +82,35 @@ jobs:
     # with:
     #   pre-hk: bun install --frozen-lockfile   # only where a build must run first
     #   apt-packages: libreadline-dev
-```
-
-`release.yml`:
-
-```yaml
-name: release
-on:
-  push: { branches: [main] }
-permissions:
-  contents: write
-jobs:
-  release:
+  ci-gate:
+    if: always()
+    needs: [hk]            # every job that must pass, nothing downstream
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: re-actors/alls-green@<pinned-sha>
+        with:
+          jobs: ${{ toJSON(needs) }}
+          # allowed-skips: <jobs that may legitimately skip on a PR>
+  release:                 # only for released repos
+    needs: ci-gate
+    if: github.event_name == 'push'
     uses: hugoh/gh-workflows/.github/workflows/release.yml@<pinned-sha>
     permissions: { contents: write }
 ```
 
+`protection sync` requires `ci-gate` instead of the jobs it lists (including
+the `hk / lint` check of a caller job), so adding a new CI job means adding it
+to `ci-gate`'s `needs`, not adding a required check by name.
+
 ## Do NOT
 
+- Add a release (or publish/deploy) job that doesn't `needs: ci-gate`, or add
+  a CI job without listing it in `ci-gate`'s `needs`. An unlisted job is
+  silently ungated.
+- Put `ci-gate` behind a `uses:` (reusable workflow): its check name must stay
+  the bare `ci-gate`.
 - Add `renovate/**` to any `push:` trigger. Renovate opens PRs and merges them
   itself (`renovate-config` sets `platformAutomerge: false`); a `renovate/**`
   push trigger just double-builds.
@@ -115,7 +130,7 @@ gh repo create hugoh/my-new-repo --private --source ../my-new-repo --push
 ```
 
 Flags: `--release`, `--pypi` (implies `--release`; PyPI publish job +
-`package-check`), `--pypi-publish-ref`, `--pages`, `--action`
+`package-check`), `--pypi-publish-ref`, `--alls-green-ref`, `--pages`, `--action`
 (Marketplace/action repo — adds `action.yml` + major-tag move),
 `--rerun-transient`, `--tests {none,python}`, `--shell`, `--apt-packages`,
 `--pre-hk`, `--default-branch`. `--dry-run` to preview. Templates live in
@@ -123,14 +138,16 @@ Flags: `--release`, `--pypi` (implies `--release`; PyPI publish job +
 
 ### Publishing to PyPI
 
-`--pypi` adds a `publish-pypi` job to `release.yml` (runs after the tag is cut,
+`--pypi` adds a `publish-pypi` job to `ci.yml` (runs after the tag is cut,
 with only `id-token: write`, in the `pypi` environment; `skip-existing` makes a
 re-run safe) and a `package-check` mise task that hk runs in CI: it builds the
 sdist and wheel, runs `twine check --strict` and installs the wheel in a clean
 env. One-time manual setup, before the first release:
 
 1. On PyPI, add a (pending) trusted publisher for the repo, workflow
-   `release.yml`, environment `pypi`.
+   `ci.yml` (the file holding the publish job: PyPI matches the workflow
+   filename, so a repo migrated from a separate `release.yml` must update its
+   trusted publisher), environment `pypi`.
 2. In the GitHub repo, create the environment `pypi`, ideally with required
    reviewers.
 
