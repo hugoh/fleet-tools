@@ -53,6 +53,9 @@ class Tag(enum.StrEnum):
 # forever. (A job skipped via an `if:` condition inside a triggered workflow
 # is fine to require -- GitHub reports that as a passing "skipped" check.)
 # Sampling an actual PR's check runs avoids picking up the former case.
+# The workflow files that classify those checks (jobs a gate covers, push-only
+# jobs, path-filtered jobs) are read at the same PR head, so a PR that adds a
+# gate is classified by its own workflows rather than the default branch's.
 #
 # Only check runs reported by the "github-actions" app are considered:
 # third-party apps (DeepSource, Codecov, etc.) aren't defined by the repo
@@ -890,8 +893,14 @@ async def _create_protection_ruleset(
 async def _sample_contexts(
     owner: str, repo: Repo, pr_head_shas: list[str]
 ) -> tuple[list[str], set[str]]:
-    """`(sampled contexts, path-filtered job names)`."""
-    docs = await _workflow_docs(owner, repo.name, repo.default_branch)
+    """`(sampled contexts, path-filtered job names)`.
+
+    Workflow files are read at the sampled PR's head, not the default branch:
+    the checks come from that commit, so a PR that adds a gate job (or makes a
+    job push-only) must be classified by its own workflows. Reading the default
+    branch would miss the new gate and require every job it covers.
+    """
+    docs = await _workflow_docs(owner, repo.name, pr_head_shas[0])
     contexts = await _check_run_contexts(
         owner,
         repo.name,

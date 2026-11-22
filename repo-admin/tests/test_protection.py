@@ -1488,7 +1488,7 @@ async def test_branch_protection_worker_fetches_workflow_files_once(monkeypatch)
     )
     monkeypatch.setattr(protection, "_workflow_docs", counting_docs)
     await worker(REPO)
-    assert fetches == ["main"]
+    assert fetches == ["sha"]
 
 
 async def test_branch_protection_worker_keeps_existing_checks_when_repo_has_no_prs(
@@ -1542,3 +1542,41 @@ def test_finalize_contexts_drops_reusable_caller_checks_covered_by_a_gate():
         "ci-gate",
         "semantic-pr / semantic-pr",
     ]
+
+
+async def test_sample_contexts_reads_workflows_at_the_pr_head(monkeypatch):
+    # A migration PR adds `ci-gate` (covering `hk` and `link-check`) and makes
+    # `pages` push-only; the default branch has none of that yet.
+    refs = []
+    head_docs = [
+        {
+            "jobs": {
+                "hk": {"uses": "o/gh-workflows/.github/workflows/hk.yml@x"},
+                "link-check": {"uses": "./.github/workflows/link-check.yml"},
+                "ci-gate": {"needs": ["hk", "link-check"]},
+                "pages": {
+                    "needs": "ci-gate",
+                    "if": "github.event_name == 'push'",
+                    "uses": "./.github/workflows/pages.yml",
+                },
+            }
+        }
+    ]
+
+    async def fake_docs(owner, name, ref):
+        refs.append(ref)
+        return head_docs if ref == "headsha" else []
+
+    seen = {}
+
+    async def fake_contexts(owner, name, shas, prefixes, covered, push_only):
+        seen.update(shas=shas, covered=covered, push_only=push_only)
+        return ["ci-gate"]
+
+    monkeypatch.setattr(protection, "_workflow_docs", fake_docs)
+    monkeypatch.setattr(protection, "_check_run_contexts", fake_contexts)
+    contexts, _ = await protection._sample_contexts("hugoh", REPO, ["headsha", "older"])
+    assert refs == ["headsha"]
+    assert contexts == ["ci-gate"]
+    assert seen["covered"] == {"hk", "link-check"}
+    assert seen["push_only"] == {"pages"}

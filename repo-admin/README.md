@@ -65,7 +65,9 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   convention `go-tools`' `mise run gh-repo-setup` already established.
   Required contexts are detected from the most recent pull request's check
   runs (not the default branch tip — see `repo_admin.py`'s header comment
-  for why), limited to jobs from the repo's own `.github/workflows/` files:
+  for why), classified by the workflow files at that same commit (so a PR
+  that adds a `ci-gate` is read with its own gate), limited to jobs from the
+  repo's own `.github/workflows/` files:
   third-party apps and GitHub-managed setups (CodeQL default setup's
   "Analyze (...)", the "github-advanced-security" check) never become merge
   gates. A `hk / lint`-style check produced by a job that calls a reusable
