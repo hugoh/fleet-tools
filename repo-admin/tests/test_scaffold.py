@@ -26,7 +26,7 @@ def _args(path: Path, **overrides: object) -> argparse.Namespace:
         "rerun_transient_ref": "cafef00d # v0.9.9",
         "pages_dir": "site",
         "pages_build_cmd": "mise run pages-build",
-        "watch_workflows": "[hk]",
+        "watch_workflows": "[ci]",
         "force": None,
         "no_pin": True,
         "dry_run": False,
@@ -411,3 +411,9 @@ async def test_release_is_never_a_standalone_workflow(tmp_path: Path) -> None:
     assert "release.yml" not in workflows
     assert "hk.yml" not in workflows
     assert {"ci.yml", "semantic-pr.yml"} <= workflows
+
+
+def test_rerun_transient_watches_only_workflows_the_scaffold_writes() -> None:
+    parser = argparse.ArgumentParser()
+    scaffold.add_arguments(parser)
+    assert parser.parse_args(["widget"]).watch_workflows == "[ci]"

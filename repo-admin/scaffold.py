@@ -15,7 +15,7 @@ Usage:
       [--apt-packages "pkg ..."] [--pre-hk CMD] [--default-branch B]
       [--gh-workflows-ref REF] [--pypi-publish-ref REF]
       [--rerun-transient-ref REF] [--alls-green-ref REF] [--pages-dir DIR]
-      [--pages-build-cmd CMD] [--watch-workflows "[CI, hk]"]
+      [--pages-build-cmd CMD] [--watch-workflows "[ci]"]
       [--force] [--no-pin] [--dry-run]
 """
 
@@ -396,7 +396,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--watch-workflows",
-        default="[ci, hk]",
+        default="[ci]",
         help="workflow_run watch list (with --rerun-transient)",
     )
     p.add_argument(
