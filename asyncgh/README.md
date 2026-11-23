@@ -62,6 +62,17 @@ status-based retry. Any other GraphQL error (bad query, not found) is not
 transient and raises immediately, with the failing error's `type` on
 `GhError.error_type`.
 
+## HTTP cache
+
+The shared default client keeps a private, on-disk HTTP cache
+([hishel](https://hishel.com), RFC 9111) at `$XDG_CACHE_HOME/asyncgh/http.sqlite`
+(default `~/.cache/asyncgh/`). Every GET is revalidated with `If-None-Match`
+(requests carry `Cache-Control: no-cache`), so a stale answer is never served;
+an unchanged resource comes back as a 304, which GitHub does not count against
+the rate limit. The bearer token is added beneath the cache and never stored.
+Set `ASYNCGH_NO_CACHE=1` to turn it off; `GitHubClient(cache_path=...)` enables
+it on a client you construct yourself (off by default).
+
 ## Consumers
 
 `repo-admin/` (in this repo) uses it for every account-wide GitHub command --

@@ -21,7 +21,12 @@ classifiers = [
 ]
 dynamic = ["version"]
 
-dependencies = ["httpx2>=2.10", "pynacl>=1.5", "stamina>=25.2"]
+dependencies = [
+  "hishel[httpx2]>=2.0,<3",
+  "httpx2>=2.10",
+  "pynacl>=1.5",
+  "stamina>=25.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/hugoh/fleet-tools/tree/main/asyncgh"
