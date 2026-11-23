@@ -17,12 +17,14 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 import yaml
 from reconcilekit.render import console
+from rich.progress import SpinnerColumn, TextColumn
 
 from asyncgh import (
     API_BASE,
@@ -39,6 +41,7 @@ from asyncgh import (
     public_repos,
     set_repo_secret,
     set_repo_variable,
+    viewer,
 )
 from reconcilekit import (
     ReconcileError,
@@ -62,6 +65,33 @@ from repokit import (
     run_parallel,
 )
 
+_spinner_active = False
+
+
+@contextmanager
+def startup_spinner(message: str) -> Generator[None]:
+    """A transient spinner for the network wait before the main progress bar.
+    Nested uses collapse into the outermost, since only one live display can
+    be active at once.
+    """
+    global _spinner_active
+    if _spinner_active:
+        yield
+        return
+    _spinner_active = True
+    try:
+        with progress_bar(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task(message, total=None)
+            yield
+    finally:
+        _spinner_active = False
+
+
 _default_owner: str | None = None
 _default_owner_lock = asyncio.Lock()
 
@@ -77,10 +107,10 @@ async def default_owner() -> str:
     if _default_owner is None:
         async with _default_owner_lock:
             if _default_owner is None:
-                _default_owner = (
-                    os.environ.get("GH_OWNER")
-                    or (await api_json("GET", "/user"))["login"]
-                )
+                _default_owner = os.environ.get("GH_OWNER")
+                if not _default_owner:
+                    with startup_spinner("Resolving GitHub user…"):
+                        _default_owner = await viewer()
     return _default_owner
 
 
@@ -117,6 +147,7 @@ __all__ = [  # re-exported from asyncgh / reconcilekit / repokit for repo-admin'
     "run_reconcile",
     "set_repo_secret",
     "set_repo_variable",
+    "startup_spinner",
     "summary_status",
     "unavailable_suffix",
     "unmatched_include_forks",
@@ -461,7 +492,8 @@ async def list_repos(
         include_forks = default_include_forks()
     # RepoJSON (a TypedDict) isn't assignable to plain dict per ty -- these
     # helpers work on repo JSON generically, not asyncgh's specific shape.
-    repos_json = cast("list[dict]", await fetch_repos(owner))
+    with startup_spinner("Fetching repos…"):
+        repos_json = cast("list[dict]", await fetch_repos(owner))
     for name in sorted(unmatched_include_forks(include_forks, repos_json)):
         print(
             f"warning: include-forks entry {name!r} doesn't match any repo",
