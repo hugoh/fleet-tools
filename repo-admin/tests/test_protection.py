@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 import protection
@@ -1728,3 +1729,67 @@ async def test_recent_pr_head_shas_looks_past_abandoned_prs_to_fill_the_sample(
     shas = await protection._recent_pr_head_shas("hugoh", "upd")
     assert shas == [f"merged-{i}" for i in range(5)]
     assert int(seen["per_page"]) >= 15
+
+
+class _Concurrency:
+    """Wraps a fake so a test can see how many calls overlapped."""
+
+    def __init__(self, fake):
+        self._fake = fake
+        self._in_flight = 0
+        self.peak = 0
+
+    async def __call__(self, *args, **kwargs):
+        self._in_flight += 1
+        self.peak = max(self.peak, self._in_flight)
+        try:
+            await asyncio.sleep(0)
+            return await self._fake(*args, **kwargs)
+        finally:
+            self._in_flight -= 1
+
+
+async def test_workflow_docs_fetches_files_concurrently(monkeypatch):
+    async def fake_api_raw(method, path, **kwargs):
+        return _FakeResponseWithJson(
+            200,
+            [
+                {"name": "a.yml", "type": "file"},
+                {"name": "b.yml", "type": "file"},
+                {"name": "c.yml", "type": "file"},
+            ],
+        )
+
+    async def fake_api_json(method, path, **kwargs):
+        return {"content": base64.b64encode(b"jobs: {}").decode()}
+
+    tracked = _Concurrency(fake_api_json)
+    monkeypatch.setattr(protection, "api_raw", fake_api_raw)
+    monkeypatch.setattr(protection, "api_json", tracked)
+    assert len(await protection._workflow_docs("hugoh", "repo", "main")) == 3
+    assert tracked.peak == 3
+
+
+async def test_check_run_contexts_fetches_each_sha_concurrently(monkeypatch):
+    async def fake_api_json(method, path, **k):
+        return _check_runs_response([_run("test", "success")])
+
+    tracked = _Concurrency(fake_api_json)
+    monkeypatch.setattr(protection, "api_json", tracked)
+    _patch_own_suites(monkeypatch, [1])
+    await protection._check_run_contexts("hugoh", "repo", ["a", "b", "c"])
+    assert tracked.peak == 3
+
+
+async def test_audit_repo_reads_its_sources_concurrently(monkeypatch):
+    async def fake_docs(owner, name, ref):
+        return []
+
+    async def fake_api_json(method, path, **k):
+        return {"workflow_runs": [], "workflows": []}
+
+    tracked = _Concurrency(fake_api_json)
+    monkeypatch.setattr(protection, "_workflow_docs", _Concurrency(fake_docs))
+    monkeypatch.setattr(protection, "api_json", tracked)
+    await protection.audit_repo("hugoh", REPO, [])
+    assert tracked.peak == 2

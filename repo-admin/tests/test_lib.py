@@ -538,3 +538,26 @@ def test_repo_features_rejects_unknown_key_or_non_bool(tmp_path, monkeypatch, bo
     monkeypatch.setattr(lib, "FEATURES_FILE", features_file)
     with pytest.raises(GhError):
         lib.repo_features("hrd")
+
+
+def test_startup_spinner_nests_without_a_second_live_display(monkeypatch):
+    import io
+
+    from rich.console import Console
+
+    monkeypatch.setattr(
+        lib, "console", Console(file=io.StringIO(), force_terminal=True)
+    )
+    with lib.startup_spinner("outer"), lib.startup_spinner("inner"):
+        pass
+
+
+async def test_default_owner_reuses_the_clients_viewer_request(
+    monkeypatch, httpx2_mock: respx.Router
+):
+    route = _mock_authenticated_user(monkeypatch, httpx2_mock)
+    await lib.default_owner()
+    from asyncgh import viewer
+
+    assert await viewer() == "authenticated-user"
+    assert route.call_count == 1

@@ -134,9 +134,7 @@ async def list_repos_for_args(
 
 
 async def cmd_repos_list(args: argparse.Namespace) -> int:
-    with lib.progress_bar(transient=True) as progress:
-        progress.add_task("Fetching repos...", total=None)
-        repos = await list_repos_for_args(args)
+    repos = await list_repos_for_args(args)
 
     table = Table()
     table.add_column("NAME")
@@ -1196,9 +1194,7 @@ async def _pages_enabled_repos(repos: list[Repo]) -> list[tuple[Repo, dict]]:
 
 
 async def cmd_pages_status(args: argparse.Namespace) -> int:
-    with lib.progress_bar(transient=True) as progress:
-        progress.add_task("Fetching repos...", total=None)
-        repos = await list_repos_for_args(args)
+    repos = await list_repos_for_args(args)
 
     enabled = await _pages_enabled_repos(repos)
     domains = lib.default_pages_domains()

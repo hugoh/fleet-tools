@@ -5,6 +5,7 @@ classic branch protection and repository rulesets, and builds per-repo workers.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import enum
@@ -188,11 +189,10 @@ async def _base_branch_check_names(
         f"/repos/{owner}/{name}/commits",
         params={"sha": default_branch, "per_page": _BASE_BRANCH_SAMPLE_SIZE},
     )
-    names: set[str] = set()
-    for commit in commits:
-        for run in await _github_actions_check_runs(owner, name, commit["sha"]):
-            names.add(run["name"])
-    return names
+    runs_per_commit = await asyncio.gather(
+        *(_github_actions_check_runs(owner, name, c["sha"]) for c in commits)
+    )
+    return {run["name"] for runs in runs_per_commit for run in runs}
 
 
 async def _github_actions_check_runs(owner: str, name: str, sha: str) -> list[dict]:
@@ -238,16 +238,24 @@ async def _workflow_docs(owner: str, name: str, ref: str) -> list[dict]:
     if not isinstance(entries, list):
         return []
 
-    docs: list[dict] = []
-    for entry in entries:
-        filename = entry.get("name", "")
-        if entry.get("type") != "file" or not filename.endswith((".yml", ".yaml")):
-            continue
-        blob = await api_json(
-            "GET",
-            f"/repos/{owner}/{name}/contents/.github/workflows/{filename}",
-            params={"ref": ref},
+    filenames = [
+        entry.get("name", "")
+        for entry in entries
+        if entry.get("type") == "file"
+        and entry.get("name", "").endswith((".yml", ".yaml"))
+    ]
+    blobs = await asyncio.gather(
+        *(
+            api_json(
+                "GET",
+                f"/repos/{owner}/{name}/contents/.github/workflows/{filename}",
+                params={"ref": ref},
+            )
+            for filename in filenames
         )
+    )
+    docs: list[dict] = []
+    for blob in blobs:
         try:
             content = base64.b64decode(blob["content"]).decode("utf-8")
             doc = yaml.safe_load(content) or {}
@@ -334,8 +342,16 @@ async def _check_run_contexts(
     short recent-PR window.
     """
     own_reusable_job_prefixes = own_reusable_job_prefixes or set()
-    shas = await _settled_first(owner, name, shas)
-    latest_runs = await _github_actions_check_runs(owner, name, shas[0])
+    runs_by_sha = dict(
+        zip(
+            shas,
+            await asyncio.gather(
+                *(_github_actions_check_runs(owner, name, sha) for sha in shas)
+            ),
+        )
+    )
+    shas = _settled_first(shas, runs_by_sha)
+    latest_runs = runs_by_sha[shas[0]]
     own_suites = await _own_workflow_check_suite_ids(owner, name, shas[0])
     latest_runs = [
         run
@@ -355,7 +371,7 @@ async def _check_run_contexts(
     for sha in shas[1:]:
         if not suspect:
             break
-        for run in await _github_actions_check_runs(owner, name, sha):
+        for run in runs_by_sha[sha]:
             if run["conclusion"] == "skipped":
                 continue
             base = run["name"].split(" / ", 1)[0]
@@ -482,15 +498,14 @@ def _finalize_contexts(
     return sorted(contexts)
 
 
-async def _settled_first(owner: str, name: str, shas: list[str]) -> list[str]:
+def _settled_first(shas: list[str], runs_by_sha: dict[str, list[dict]]) -> list[str]:
     """Move the first sha with no in-progress runs to the front.
 
     A head sampled mid-run lacks wrapper gates (`cross-gate` posts only once
     its `needs` finish). Falls back to the given order if every sha is running.
     """
     for i, sha in enumerate(shas):
-        runs = await _github_actions_check_runs(owner, name, sha)
-        if all(run["conclusion"] is not None for run in runs):
+        if all(run["conclusion"] is not None for run in runs_by_sha[sha]):
             return [sha, *shas[:i], *shas[i + 1 :]]
     return shas
 
@@ -819,10 +834,11 @@ async def _matching_rulesets(
 
     repo_rulesets: list[dict] = []
     org_rulesets: list[dict] = []
-    for summary in summaries:
-        if summary.get("enforcement") not in ("active", "evaluate"):
-            continue
-        detail = await api_raw("GET", f"/repos/{owner}/{name}/rulesets/{summary['id']}")
+    enforced = [s for s in summaries if s.get("enforcement") in ("active", "evaluate")]
+    details = await asyncio.gather(
+        *(api_raw("GET", f"/repos/{owner}/{name}/rulesets/{s['id']}") for s in enforced)
+    )
+    for summary, detail in zip(enforced, details):
         if not detail.is_success:
             continue
         ruleset = detail.json()
@@ -1030,15 +1046,19 @@ async def _plan_protection(
     baseline (PR required, no force-push/deletion, admins enforced) still
     applies without gating on specific checks.
     """
-    pr_head_shas = await _recent_pr_head_shas(owner, repo.name)
+    (
+        pr_head_shas,
+        (classic, plan_gated),
+        (repo_rulesets, org_rulesets),
+    ) = await asyncio.gather(
+        _recent_pr_head_shas(owner, repo.name),
+        _classic_protection(owner, repo),
+        _matching_rulesets(owner, repo.name, repo.default_branch),
+    )
     sampled, path_filtered = (
         await _sample_contexts(owner, repo, pr_head_shas)
         if pr_head_shas
         else ([], set())
-    )
-    classic, plan_gated = await _classic_protection(owner, repo)
-    repo_rulesets, org_rulesets = await _matching_rulesets(
-        owner, repo.name, repo.default_branch
     )
     target = ChecksTarget(
         classic=classic, repo_rulesets=repo_rulesets, org_rulesets=org_rulesets
@@ -1185,22 +1205,24 @@ async def _put_classic_protection(owner: str, repo: Repo, contexts: list[str]) -
 
 async def audit_repo(owner: str, repo: Repo, required: list[str]) -> RepoAudit:
     """What `protection sync` reports beyond the checks it requires."""
-    docs = await _workflow_docs(owner, repo.name, repo.default_branch)
+    docs, runs, workflows = await asyncio.gather(
+        _workflow_docs(owner, repo.name, repo.default_branch),
+        api_json(
+            "GET",
+            f"/repos/{owner}/{repo.name}/actions/runs",
+            params={
+                "branch": repo.default_branch,
+                "status": "completed",
+                "per_page": "40",
+            },
+        ),
+        api_json(
+            "GET",
+            f"/repos/{owner}/{repo.name}/actions/workflows",
+            params={"per_page": "100"},
+        ),
+    )
     report = audit_workflows(docs, required)
-    runs = await api_json(
-        "GET",
-        f"/repos/{owner}/{repo.name}/actions/runs",
-        params={
-            "branch": repo.default_branch,
-            "status": "completed",
-            "per_page": "40",
-        },
-    )
-    workflows = await api_json(
-        "GET",
-        f"/repos/{owner}/{repo.name}/actions/workflows",
-        params={"per_page": "100"},
-    )
     active = {w["id"] for w in workflows.get("workflows", []) if w["state"] == "active"}
     report.red = red_workflows(runs.get("workflow_runs", []), active)
     return report
