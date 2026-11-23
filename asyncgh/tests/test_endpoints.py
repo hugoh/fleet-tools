@@ -65,6 +65,32 @@ async def test_fetch_repos_follows_pagination_link_header(
     assert await fetch_repos("hugoh") == [{"name": "page1"}, {"name": "page2"}]
 
 
+async def test_fetch_repos_fetches_the_remaining_pages_using_the_last_link(
+    httpx2_mock: respx.Router,
+):
+    httpx2_mock.get(f"{API_BASE}/user").mock(
+        return_value=httpx.Response(200, json={"login": "hugoh"})
+    )
+    for page in ("2", "3", "4"):
+        httpx2_mock.get(f"{API_BASE}/user/repos", params={"page": page}).mock(
+            return_value=httpx.Response(200, json=[{"name": f"page{page}"}])
+        )
+    httpx2_mock.get(f"{API_BASE}/user/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"name": "page1"}],
+            headers={
+                "Link": (
+                    f'<{API_BASE}/user/repos?page=2>; rel="next", '
+                    f'<{API_BASE}/user/repos?page=4>; rel="last"'
+                )
+            },
+        )
+    )
+    names = [r["name"] for r in await fetch_repos("hugoh")]
+    assert names == ["page1", "page2", "page3", "page4"]
+
+
 async def test_public_repos_uses_public_users_endpoint_even_for_self(
     httpx2_mock: respx.Router,
 ):

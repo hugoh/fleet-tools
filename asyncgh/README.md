@@ -73,6 +73,12 @@ the rate limit. The bearer token is added beneath the cache and never stored.
 Set `ASYNCGH_NO_CACHE=1` to turn it off; `GitHubClient(cache_path=...)` enables
 it on a client you construct yourself (off by default).
 
+The cache holds at most 50 MB (least-recently-used entries are evicted first)
+and entries expire after 7 days. Change either with
+`GitHubClient(cache_max_bytes=..., cache_ttl=...)` (bytes, seconds), or for the
+shared default client with `ASYNCGH_CACHE_MAX_BYTES` and
+`ASYNCGH_CACHE_TTL_SECONDS`. An explicit argument wins over the environment.
+
 ## Consumers
 
 `repo-admin/` (in this repo) uses it for every account-wide GitHub command --

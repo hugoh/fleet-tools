@@ -23,6 +23,7 @@ from .client import (
     error_message,
     graphql,
     paginated,
+    viewer,
 )
 from .endpoints import (
     RepoJSON,
@@ -52,4 +53,5 @@ __all__ = [
     "public_repos",
     "set_repo_secret",
     "set_repo_variable",
+    "viewer",
 ]
