@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 
 import httpx
 import protection
@@ -2345,3 +2346,77 @@ async def test_cmd_protection_sync_prints_the_audit_lines(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Release not behind a gate: repo (release)" in out
     assert "Red default branch: repo (ci)" in out
+
+
+# ---------------------------------------------------------------------------
+# watch sync
+# ---------------------------------------------------------------------------
+
+
+def _watch_worker(monkeypatch, watched, *, dry_run):
+    calls = []
+
+    async def fake_api_json(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        return {}
+
+    monkeypatch.setattr(repo_admin, "api_json", fake_api_json)
+    return repo_admin.make_watch_worker("hugoh", dry_run, watched), calls
+
+
+async def test_watch_worker_unchanged_and_call_free_when_already_watching(
+    monkeypatch,
+):
+    worker, calls = _watch_worker(monkeypatch, {f"hugoh/{REPO.name}"}, dry_run=False)
+    result = await worker(REPO)
+    assert result.status == Status.UNCHANGED
+    assert calls == []
+
+
+async def test_watch_worker_matches_repo_names_case_insensitively(monkeypatch):
+    worker, calls = _watch_worker(
+        monkeypatch, {f"hugoh/{REPO.name}".lower()}, dry_run=False
+    )
+    result = await worker(dataclasses.replace(REPO, name=REPO.name.upper()))
+    assert result.status == Status.UNCHANGED
+    assert calls == []
+
+
+async def test_watch_worker_dry_run_reports_without_subscribing(monkeypatch):
+    worker, calls = _watch_worker(monkeypatch, set(), dry_run=True)
+    result = await worker(REPO)
+    assert "would watch" in result.line
+    assert result.status == Status.OK
+    assert calls == []
+
+
+async def test_watch_worker_subscribes_when_not_watching(monkeypatch):
+    worker, calls = _watch_worker(monkeypatch, set(), dry_run=False)
+    result = await worker(REPO)
+    assert result.status == Status.OK
+    assert calls == [
+        (
+            "PUT",
+            f"/repos/hugoh/{REPO.name}/subscription",
+            {"subscribed": True, "ignored": False},
+        )
+    ]
+
+
+async def test_watched_repos_reads_the_users_subscriptions_in_one_listing(
+    monkeypatch,
+):
+    seen = []
+
+    async def fake_paginated(method, path, params=None):
+        seen.append((method, path))
+        return [{"full_name": "hugoh/A"}, {"full_name": "someone/b"}]
+
+    monkeypatch.setattr(repo_admin, "paginated", fake_paginated)
+    assert await repo_admin._watched_repos() == {"hugoh/a", "someone/b"}
+    assert seen == [("GET", "/user/subscriptions")]
+
+
+def test_watch_sync_subcommand_is_registered_in_parser():
+    args = repo_admin.build_parser().parse_args(["watch", "sync", "--dry-run"])
+    assert args.func == repo_admin._watch_sync

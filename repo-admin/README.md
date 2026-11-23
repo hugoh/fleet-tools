@@ -51,6 +51,12 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   discussions from `config/features.yaml`: a `"*"` entry plus optional
   per-repo overrides. Keys the config doesn't name are left alone. The
   Releases/Packages/Deployments sidebar toggles have no API.
+- **`watch sync [--dry-run]`** — subscribes you to every repo in scope
+  (`PUT /repos/{owner}/{repo}/subscription`), switching "ignored" repos back
+  to watching. GitHub then emails new issues, PRs and their comments, provided
+  email is enabled for "Watching" at github.com/settings/notifications. That
+  setting, and the "Custom: Issues + Pull requests" watch level, have no API.
+  Not part of the meta `sync`, since it changes your account, not the repos.
 - **`merge sync [--dry-run]`** — enables auto-merge,
   delete-branch-on-merge, and PR-branch auto-update (the last one matters
   because branch protection requires PR branches to be up to date before

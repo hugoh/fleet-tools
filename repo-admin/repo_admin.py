@@ -17,6 +17,8 @@ Usage: repo_admin.py <resource> <verb> [repo ...] [--dry-run] [--verbose] [--ski
                                  per-repo overrides)
   protection sync               apply a baseline branch-protection policy to
                                  each repo's default branch
+  watch    sync                 subscribe to every repo so GitHub emails new
+                                 issues and PRs
   security sync                 enable free, native GitHub security features
   sync                          run merge/features/protection/security/pages sync, in
                                  that order
@@ -95,6 +97,7 @@ from lib import (
     default_required_check_ignore,
     error_message,
     list_repos,
+    paginated,
     partition_fields,
     result_line,
     run_parallel,
@@ -482,6 +485,56 @@ def make_features_worker(owner: str, dry_run: bool):
 
 async def _features_sync(args: argparse.Namespace) -> int:
     return await _run_worker_sync(args, make_features_worker)
+
+
+# ---------------------------------------------------------------------------
+# watch sync
+#
+# Subscribes the authenticated user to every repo in scope, so GitHub emails
+# new issues, PRs and their comments (per the account's notification
+# settings). A repo set to "ignore" is switched back to watching. Watching is
+# per-user, so there is no config file: scope with repo names or --skip.
+# ---------------------------------------------------------------------------
+
+
+async def _watched_repos() -> set[str]:
+    """Lower-cased `owner/name` of every repo the user watches: one listing
+    instead of a GET per repo. Ignored repos are absent, so they get re-watched.
+    """
+    subscriptions = await paginated("GET", "/user/subscriptions")
+    return {repo["full_name"].lower() for repo in subscriptions}
+
+
+def make_watch_worker(owner: str, dry_run: bool, watched: set[str]):
+    async def worker(repo: Repo) -> RepoResult:
+        watching = f"{owner}/{repo.name}".lower() in watched
+        status = classify_status(at_target=True, changed=not watching)
+        if watching:
+            detail = "watching"
+        elif dry_run:
+            detail = "would watch"
+        else:
+            await api_json(
+                "PUT",
+                f"/repos/{owner}/{repo.name}/subscription",
+                json={"subscribed": True, "ignored": False},
+            )
+            detail = "not watching -> watching"
+        return RepoResult(repo, result_line(repo.name, detail, status), status)
+
+    return worker
+
+
+async def _watch_sync(args: argparse.Namespace) -> int:
+    repos = await list_repos_for_args(args)
+    owner = await default_owner()
+    await run_parallel(
+        repos,
+        make_watch_worker(owner, args.dry_run, await _watched_repos()),
+        verbose=args.verbose,
+        dry_run=args.dry_run,
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1749,6 +1802,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resource_verbs("features").add_parser("sync", parents=[mutating]).set_defaults(
         func=_features_sync
+    )
+    resource_verbs("watch").add_parser("sync", parents=[mutating]).set_defaults(
+        func=_watch_sync
     )
     resources.add_parser("sync", parents=[mutating]).set_defaults(func=cmd_sync)
 
