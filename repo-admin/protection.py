@@ -142,21 +142,34 @@ def branch_protection_up_to_date(current: dict | None, contexts: list[str]) -> b
     )
 
 
-_PR_SAMPLE_SIZE = "5"
+_PR_SAMPLE_SIZE = 5
+_PR_LISTING_SIZE = "20"
 
 
 async def _recent_pr_head_shas(owner: str, name: str) -> list[str]:
+    """Head shas of the most recently updated open or merged PRs.
+
+    A PR closed without merging is skipped: bots close stale ones long after
+    their checks went out of date (Renovate's "abandoned" cleanup, say), which
+    makes them the most recently updated PR while their head predates the
+    repo's current gates.
+    """
     pulls = await api_json(
         "GET",
         f"/repos/{owner}/{name}/pulls",
         params={
             "state": "all",
-            "per_page": _PR_SAMPLE_SIZE,
+            "per_page": _PR_LISTING_SIZE,
             "sort": "updated",
             "direction": "desc",
         },
     )
-    return [pull["head"]["sha"] for pull in pulls]
+    kept = [
+        pull["head"]["sha"]
+        for pull in pulls
+        if pull["state"] == "open" or pull.get("merged_at")
+    ]
+    return kept[:_PR_SAMPLE_SIZE]
 
 
 _BASE_BRANCH_SAMPLE_SIZE = "5"
