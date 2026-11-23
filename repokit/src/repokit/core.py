@@ -18,15 +18,13 @@ import os
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TypeVar, cast
+from typing import cast
 
 from asyncgh import GhError, GhRateLimitError, aclose_client, fetch_repos
 from reconcilekit import Status
 from reconcilekit import run_parallel as _run_parallel
 
 DEFAULT_JOBS = int(os.environ.get("GH_JOBS", "12"))
-
-_Args = TypeVar("_Args")
 
 
 @dataclass(frozen=True)
@@ -114,9 +112,9 @@ async def list_repos(
     return filter_repos(repos_json, only=only, skip=skip, include_forks=include_forks)
 
 
-def run_cli(
-    entrypoint: Callable[[_Args], Awaitable[int]],
-    args: _Args,
+def run_cli[Args](
+    entrypoint: Callable[[Args], Awaitable[int]],
+    args: Args,
 ) -> int:
     """Runs an async CLI entrypoint under asyncio, always closing the shared
     HTTP client afterwards and turning a GhError into a stderr message plus

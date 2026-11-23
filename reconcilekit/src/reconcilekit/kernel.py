@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Protocol
 
 from rich.progress import MofNCompleteColumn, Progress
 
@@ -45,13 +45,8 @@ class ResultLike(Protocol):
     line: str
 
 
-Target = TypeVar("Target", bound=HasName)
-State = TypeVar("State")
-R = TypeVar("R", bound=ResultLike)
-
-
 @dataclass
-class Result(Generic[Target]):
+class Result[Target: HasName]:
     """A worker's return value: `target` and `line` for reporting, `status`
     for classification/suppression, and an optional `tag` for a caller's own
     end-of-run bookkeeping (distinct from `status`, which is exit-code plumbing).
@@ -63,7 +58,7 @@ class Result(Generic[Target]):
     tag: str | None = None
 
 
-async def run_reconcile(
+async def run_reconcile[State, R: ResultLike](
     *,
     dry_run: bool,
     fetch: Callable[[], Awaitable[State]],
@@ -80,7 +75,7 @@ async def run_reconcile(
     return await apply_result(state)
 
 
-async def run_parallel(
+async def run_parallel[Target: HasName, R: ResultLike](
     targets: Sequence[Target],
     worker: Callable[[Target], Awaitable[R]],
     *,
