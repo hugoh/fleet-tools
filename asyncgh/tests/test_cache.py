@@ -2,10 +2,11 @@ import os
 import stat
 
 import httpx
+import pytest
 import respx
-from asyncgh.client import GitHubClient, _default_cache_path
+from asyncgh.client import GitHubClient, _cache_storage, _default_cache_path
 
-from asyncgh import API_BASE
+from asyncgh import API_BASE, GhError
 
 URL = f"{API_BASE}/repos/hugoh/x"
 ETAG = '"v1"'
@@ -120,3 +121,40 @@ async def test_cache_file_is_owner_only_whatever_the_umask_and_directory(
         os.umask(previous)
     modes = {p.name: stat.S_IMODE(p.stat().st_mode) for p in shared.iterdir()}
     assert {m for n, m in modes.items() if n.startswith(path.name)} == {0o600}
+
+
+def test_cache_is_capped_at_50mb_and_expires_after_a_week_by_default(tmp_path):
+    gh = GitHubClient(cache_path=tmp_path / "http.sqlite")
+    storage = _cache_storage(tmp_path / "http.sqlite", gh._cache_limits)
+    assert storage.max_size == 50 * 1024 * 1024
+    assert storage.default_ttl == 7 * 24 * 3600
+
+
+def test_cache_limits_come_from_the_constructor(tmp_path):
+    gh = GitHubClient(
+        cache_path=tmp_path / "http.sqlite", cache_max_bytes=1024, cache_ttl=60
+    )
+    storage = _cache_storage(tmp_path / "http.sqlite", gh._cache_limits)
+    assert (storage.max_size, storage.default_ttl) == (1024, 60)
+
+
+def test_cache_limits_come_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASYNCGH_CACHE_MAX_BYTES", "2048")
+    monkeypatch.setenv("ASYNCGH_CACHE_TTL_SECONDS", "120")
+    gh = GitHubClient(cache_path=tmp_path / "http.sqlite")
+    storage = _cache_storage(tmp_path / "http.sqlite", gh._cache_limits)
+    assert (storage.max_size, storage.default_ttl) == (2048, 120)
+
+
+def test_constructor_cache_limits_win_over_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASYNCGH_CACHE_MAX_BYTES", "2048")
+    gh = GitHubClient(cache_path=tmp_path / "http.sqlite", cache_max_bytes=4096)
+    assert gh._cache_limits.max_bytes == 4096
+
+
+def test_a_non_numeric_cache_limit_in_the_environment_is_an_error(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ASYNCGH_CACHE_TTL_SECONDS", "week")
+    with pytest.raises(GhError, match="ASYNCGH_CACHE_TTL_SECONDS"):
+        GitHubClient(cache_path=tmp_path / "http.sqlite")

@@ -8,8 +8,11 @@ import asyncio
 import os
 import subprocess
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, override
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx2
 import stamina
@@ -206,6 +209,51 @@ def _default_cache_path() -> Path | None:
     return base / "asyncgh" / "http.sqlite"
 
 
+DEFAULT_CACHE_MAX_BYTES = 50 * 1024 * 1024
+DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 3600
+
+
+@dataclass(frozen=True)
+class _CacheLimits:
+    max_bytes: int
+    ttl_seconds: float
+
+
+def _cache_limits(max_bytes: int | None, ttl_seconds: float | None) -> _CacheLimits:
+    """An explicit argument wins, then `ASYNCGH_CACHE_MAX_BYTES` /
+    `ASYNCGH_CACHE_TTL_SECONDS`, then the default.
+    """
+    return _CacheLimits(
+        max_bytes
+        if max_bytes is not None
+        else int(_env_number("ASYNCGH_CACHE_MAX_BYTES", DEFAULT_CACHE_MAX_BYTES, int)),
+        ttl_seconds
+        if ttl_seconds is not None
+        else _env_number("ASYNCGH_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS, float),
+    )
+
+
+def _env_number(name: str, default: float, parse: Callable[[str], float]) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return parse(raw)
+    except ValueError as exc:
+        raise GhError(f"{name} must be a number, got {raw!r}") from exc
+
+
+def _cache_storage(path: Path, limits: _CacheLimits) -> AsyncSqliteStorage:
+    """Bounded by size (least-recently-used entries evicted) and by age, since
+    check-run URLs are keyed by commit sha and are never requested again.
+    """
+    return AsyncSqliteStorage(
+        database_path=path,
+        max_size=limits.max_bytes,
+        default_ttl=limits.ttl_seconds,
+    )
+
+
 class _TokenTransport(httpx2.AsyncBaseTransport):
     """Adds the bearer token beneath the cache, so stored requests never
     carry it and the cache file holds no credential.
@@ -215,10 +263,12 @@ class _TokenTransport(httpx2.AsyncBaseTransport):
         self._token = token
         self._inner = inner
 
+    @override
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         request.headers["Authorization"] = f"Bearer {self._token}"
         return await self._inner.handle_async_request(request)
 
+    @override
     async def aclose(self) -> None:
         await self._inner.aclose()
 
@@ -244,9 +294,12 @@ class GitHubClient:
         token: str | None = None,
         max_retries: int | None = None,
         cache_path: Path | None = None,
+        cache_max_bytes: int | None = None,
+        cache_ttl: float | None = None,
     ) -> None:
         self._token = token
         self._cache_path = cache_path
+        self._cache_limits = _cache_limits(cache_max_bytes, cache_ttl)
         self._max_retries = (
             max_retries if max_retries is not None else _default_max_retries()
         )
@@ -288,7 +341,7 @@ class GitHubClient:
         self._cache_path.chmod(0o600)
         return AsyncCacheTransport(
             next_transport=_TokenTransport(token, httpx2.AsyncHTTPTransport()),
-            storage=AsyncSqliteStorage(database_path=self._cache_path),
+            storage=_cache_storage(self._cache_path, self._cache_limits),
             rfc=CacheOptions(shared=False),
         )
 
@@ -459,20 +512,47 @@ class GitHubClient:
     async def paginated(
         self, method: str, path: str, *, params: dict | None = None
     ) -> list[dict]:
-        """Follows GitHub's `Link: rel="next"` header, concatenating every
-        page's JSON array into one list.
+        """Concatenates every page's JSON array into one list.
+
+        When the first response carries a `rel="last"` link the remaining
+        pages are fetched concurrently; otherwise `rel="next"` is followed
+        one page at a time.
         """
-        items: list[dict] = []
-        url = path
-        query = params
-        while url:
-            response = await self.api_raw(method, url, params=query)
-            if not response.is_success:
-                raise GhError(error_message(response), status_code=response.status_code)
+        first = await self._page(method, path, params)
+        items: list[dict] = list(first.json())
+        next_url = first.links.get("next", {}).get("url")
+        last_url = first.links.get("last", {}).get("url")
+        if next_url and last_url:
+            urls = _page_urls(next_url, last_url)
+            pages = await asyncio.gather(*(self._page(method, u, None) for u in urls))
+            for page in pages:
+                items.extend(page.json())
+            return items
+        while next_url:
+            response = await self._page(method, next_url, None)
             items.extend(response.json())
-            url = response.links.get("next", {}).get("url")
-            query = None  # the "next" link already carries the full query string
+            next_url = response.links.get("next", {}).get("url")
         return items
+
+    async def _page(
+        self, method: str, url: str, params: dict | None
+    ) -> httpx2.Response:
+        response = await self.api_raw(method, url, params=params)
+        if not response.is_success:
+            raise GhError(error_message(response), status_code=response.status_code)
+        return response
+
+
+def _page_urls(next_url: str, last_url: str) -> list[str]:
+    """The URLs of pages `next` through `last`, built from the `next` link."""
+    parts = urlsplit(next_url)
+    query = dict(parse_qsl(parts.query))
+    first = int(query["page"])
+    last = int(dict(parse_qsl(urlsplit(last_url).query))["page"])
+    return [
+        urlunsplit(parts._replace(query=urlencode({**query, "page": str(page)})))
+        for page in range(first, last + 1)
+    ]
 
 
 _default_client: GitHubClient | None = None
@@ -486,6 +566,11 @@ def _get_default_client() -> GitHubClient:
     if _default_client is None:
         _default_client = GitHubClient(cache_path=_default_cache_path())
     return _default_client
+
+
+async def viewer() -> str:
+    """The authenticated user's login, from one `GET /user` per process."""
+    return await _get_default_client().viewer()
 
 
 async def aclose_client() -> None:

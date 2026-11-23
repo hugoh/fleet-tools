@@ -573,3 +573,12 @@ async def test_api_raw_returns_plain_403_without_exhausted_limit(
     )
     response = await api_raw("GET", "/x")
     assert response.status_code == 403
+
+
+async def test_module_viewer_shares_one_user_request(httpx2_mock: respx.Router):
+    route = httpx2_mock.get(f"{API_BASE}/user").mock(
+        return_value=httpx.Response(200, json={"login": "hugoh"})
+    )
+    assert await client.viewer() == "hugoh"
+    assert await client.viewer() == "hugoh"
+    assert route.call_count == 1
