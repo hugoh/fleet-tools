@@ -493,6 +493,7 @@ def _branch_protection_worker(
     base_checks=(),
     adopt_renamed_checks=False,
     ignored_checks=None,
+    verbose=False,
 ):
     async def fake_shas(owner, name):
         return list(shas)
@@ -545,6 +546,7 @@ def _branch_protection_worker(
         clear_stale_checks=clear_stale_checks,
         adopt_renamed_checks=adopt_renamed_checks,
         ignored_checks=ignored_checks,
+        verbose=verbose,
     )
     return (worker, calls) if track_calls else worker
 
@@ -623,6 +625,23 @@ async def test_branch_protection_worker_dry_run_unchanged_line(monkeypatch):
     result = await worker(REPO)
     assert result.status == Status.UNCHANGED
     assert result.line == f"{'repo':<30} unchanged: 2 required checks"
+
+
+async def test_branch_protection_worker_verbose_lists_the_required_checks(
+    monkeypatch,
+):
+    worker = _branch_protection_worker(
+        monkeypatch,
+        dry_run=True,
+        shas=["sha"],
+        contexts=["hk / lint", "ci-gate"],
+        current=_protection_state(contexts=["hk / lint", "ci-gate"]),
+        verbose=True,
+    )
+    result = await worker(REPO)
+    assert result.line == (
+        f"{'repo':<30} unchanged: 2 required checks: ci-gate, hk / lint"
+    )
 
 
 async def test_branch_protection_worker_ignored_check_is_not_required(monkeypatch):

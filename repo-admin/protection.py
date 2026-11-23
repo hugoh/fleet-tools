@@ -1112,7 +1112,7 @@ def _changes(existing: list[str], contexts: list[str]) -> str:
     return ", ".join(added + removed) or "baseline settings"
 
 
-def _result(plan: _Plan, *, applied: bool) -> RepoResult:
+def _result(plan: _Plan, *, applied: bool, verbose: bool = False) -> RepoResult:
     limited = plan.stale_retained or plan.evaluate_mode
     notes = [*plan.notes]
     if plan.evaluate_mode:
@@ -1128,6 +1128,8 @@ def _result(plan: _Plan, *, applied: bool) -> RepoResult:
             if count
             else "no required checks"
         )
+        if verbose and plan.contexts:
+            detail += f": {', '.join(sorted(plan.contexts))}"
     else:
         status = Status.LIMITED if limited else Status.OK
         detail = _change_description(plan, applied=applied)
@@ -1211,6 +1213,7 @@ def make_branch_protection_worker(
     adopt_renamed_checks: bool = False,
     audit: dict[str, RepoAudit] | None = None,
     ignored_checks: dict[str, set[str]] | None = None,
+    verbose: bool = False,
 ):
     async def worker(repo: Repo) -> RepoResult:
         async def fetch() -> _Plan:
@@ -1229,7 +1232,7 @@ def make_branch_protection_worker(
             return plan
 
         def plan_result(plan: _Plan) -> RepoResult:
-            return plan.final or _result(plan, applied=False)
+            return plan.final or _result(plan, applied=False, verbose=verbose)
 
         async def apply_result(plan: _Plan) -> RepoResult:
             return plan.final or await _apply_plan(owner, plan)

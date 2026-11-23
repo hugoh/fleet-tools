@@ -785,6 +785,7 @@ async def cmd_protection_sync(args: argparse.Namespace) -> int:
             adopt_renamed_checks=getattr(args, "adopt_renamed_checks", False),
             audit=audits,
             ignored_checks=default_required_check_ignore(),
+            verbose=args.verbose,
         ),
         verbose=args.verbose,
         dry_run=args.dry_run,
