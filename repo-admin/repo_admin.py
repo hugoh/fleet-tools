@@ -473,9 +473,14 @@ def make_features_worker(owner: str, dry_run: bool):
             detail = str(after) if before == after else f"{before} -> {after}"
             return RepoResult(repo, result_line(repo.name, detail, status), status)
 
+        async def fetch() -> dict[str, bool]:
+            if all(key in repo.features for key in lib.FEATURE_KEYS):
+                return {key: repo.features[key] for key in lib.FEATURE_KEYS}
+            return await _repo_features(owner, repo.name)
+
         return await run_reconcile(
             dry_run=dry_run,
-            fetch=lambda: _repo_features(owner, repo.name),
+            fetch=fetch,
             plan_result=plan_result,
             apply_result=apply_result,
         )

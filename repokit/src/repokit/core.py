@@ -17,7 +17,7 @@ import functools
 import os
 import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeVar, cast
 
 from asyncgh import GhError, GhRateLimitError, aclose_client, fetch_repos
@@ -36,6 +36,9 @@ class Repo:
     is_private: bool
     is_fork: bool
     homepage: str = ""
+    features: dict[str, bool] = field(default_factory=dict, hash=False, compare=False)
+    """The listing's `has_<name>` flags as `{name: bool}` (issues, wiki, ...),
+    so callers can read them without a per-repo GET."""
 
 
 @dataclass
@@ -84,6 +87,11 @@ def filter_repos(
                 is_private=entry["private"],
                 is_fork=entry["fork"],
                 homepage=entry.get("homepage") or "",
+                features={
+                    key[len("has_") :]: value
+                    for key, value in entry.items()
+                    if key.startswith("has_") and isinstance(value, bool)
+                },
             )
         )
     return repos
