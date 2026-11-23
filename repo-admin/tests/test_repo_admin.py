@@ -2348,6 +2348,46 @@ async def test_cmd_protection_sync_prints_the_audit_lines(monkeypatch, capsys):
     assert "Red default branch: repo (ci)" in out
 
 
+def _listed_repo(**features):
+    return Repo(
+        name="listed",
+        default_branch="main",
+        is_private=False,
+        is_fork=False,
+        features=features,
+    )
+
+
+async def test_features_worker_dry_run_uses_listing_without_api_calls(monkeypatch):
+    worker, calls = _features_worker(
+        monkeypatch, {}, {"issues": True, "wiki": False}, dry_run=True
+    )
+    listed = _listed_repo(issues=False, wiki=False, projects=False, discussions=False)
+    result = await worker(listed)
+    assert "would set: issues=True" in result.line
+    assert calls == []
+
+
+async def test_features_worker_unchanged_from_listing_makes_no_api_calls(monkeypatch):
+    worker, calls = _features_worker(monkeypatch, {}, {"wiki": False}, dry_run=False)
+    listed = _listed_repo(issues=True, wiki=False, projects=False, discussions=False)
+    result = await worker(listed)
+    assert result.status == Status.UNCHANGED
+    assert calls == []
+
+
+async def test_features_worker_apply_from_listing_patches_then_verifies(monkeypatch):
+    worker, calls = _features_worker(
+        monkeypatch,
+        {**FEATURES_ALL_OFF, "has_issues": True},
+        {"issues": True},
+        dry_run=False,
+    )
+    listed = _listed_repo(issues=False, wiki=False, projects=False, discussions=False)
+    await worker(listed)
+    assert [m for m, _ in calls] == ["PATCH", "GET"]
+
+
 # ---------------------------------------------------------------------------
 # watch sync
 # ---------------------------------------------------------------------------

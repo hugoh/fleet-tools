@@ -152,3 +152,28 @@ def test_run_parallel_uses_gh_jobs_concurrency():
     import repokit
 
     assert repokit.run_parallel.keywords["jobs"] == repokit.DEFAULT_JOBS
+
+
+def test_filter_repos_carries_has_flags_from_the_listing():
+    repos = filter_repos(
+        [
+            {
+                "name": "r",
+                "fork": False,
+                "archived": False,
+                "private": False,
+                "default_branch": "main",
+                "has_issues": True,
+                "has_wiki": False,
+                "has_downloads": True,
+                "homepage": None,
+            }
+        ]
+    )
+    assert repos[0].features == {"issues": True, "wiki": False, "downloads": True}
+
+
+def test_repo_without_has_flags_has_no_features_and_stays_hashable():
+    repo = Repo(name="r", default_branch="main", is_private=False, is_fork=False)
+    assert repo.features == {}
+    assert {repo: 1}[repo] == 1
