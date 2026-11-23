@@ -8,10 +8,13 @@ import asyncio
 import os
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Self
 
 import httpx2
 import stamina
+from hishel import AsyncSqliteStorage, CacheOptions
+from hishel.httpx2 import AsyncCacheTransport
 
 API_BASE = "https://api.github.com"
 
@@ -193,6 +196,33 @@ def error_message(response: httpx2.Response) -> str:
     return body.get("message", response.text)
 
 
+def _default_cache_path() -> Path | None:
+    """Where the shared default client keeps its HTTP cache, or None when
+    ASYNCGH_NO_CACHE is set.
+    """
+    if os.environ.get("ASYNCGH_NO_CACHE"):
+        return None
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return base / "asyncgh" / "http.sqlite"
+
+
+class _TokenTransport(httpx2.AsyncBaseTransport):
+    """Adds the bearer token beneath the cache, so stored requests never
+    carry it and the cache file holds no credential.
+    """
+
+    def __init__(self, token: str, inner: httpx2.AsyncBaseTransport) -> None:
+        self._token = token
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 class GitHubClient:
     """One GitHub REST + GraphQL client: auth, connection, retry, and the
     request / pagination helpers every endpoint wrapper is built on.
@@ -209,9 +239,14 @@ class GitHubClient:
     """
 
     def __init__(
-        self, *, token: str | None = None, max_retries: int | None = None
+        self,
+        *,
+        token: str | None = None,
+        max_retries: int | None = None,
+        cache_path: Path | None = None,
     ) -> None:
         self._token = token
+        self._cache_path = cache_path
         self._max_retries = (
             max_retries if max_retries is not None else _default_max_retries()
         )
@@ -225,15 +260,37 @@ class GitHubClient:
             async with self._lock:
                 if self._http is None:
                     token = self._token if self._token is not None else _auth_token()
-                    self._http = httpx2.AsyncClient(
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Accept": "application/vnd.github+json",
-                            "X-GitHub-Api-Version": "2022-11-28",
-                        },
-                        timeout=30,
-                    )
+                    headers = {
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    }
+                    if self._cache_path is None:
+                        headers["Authorization"] = f"Bearer {token}"
+                        self._http = httpx2.AsyncClient(headers=headers, timeout=30)
+                    else:
+                        self._http = httpx2.AsyncClient(
+                            headers={**headers, "Cache-Control": "no-cache"},
+                            timeout=30,
+                            transport=self._cache_transport(token),
+                        )
         return self._http
+
+    def _cache_transport(self, token: str) -> httpx2.AsyncBaseTransport:
+        """A private HTTP cache that revalidates every GET (`no-cache`), so a
+        stale answer is never served and an unchanged resource comes back as
+        a 304, which GitHub doesn't count against the rate limit.
+        """
+        assert self._cache_path is not None
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Created or tightened before SQLite opens it: its -wal/-shm files copy
+        # this mode, and the directory's own mode isn't ours to rely on.
+        self._cache_path.touch(mode=0o600, exist_ok=True)
+        self._cache_path.chmod(0o600)
+        return AsyncCacheTransport(
+            next_transport=_TokenTransport(token, httpx2.AsyncHTTPTransport()),
+            storage=AsyncSqliteStorage(database_path=self._cache_path),
+            rfc=CacheOptions(shared=False),
+        )
 
     async def viewer(self) -> str:
         """The login of the authenticated user (`GET /user`), cached for the
@@ -427,7 +484,7 @@ def _get_default_client() -> GitHubClient:
     # and most callers only ever talk to one account.
     global _default_client
     if _default_client is None:
-        _default_client = GitHubClient()
+        _default_client = GitHubClient(cache_path=_default_cache_path())
     return _default_client
 
 

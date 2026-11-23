@@ -20,3 +20,9 @@ def fake_auth_token(monkeypatch):
     # creation is lazy, so this just needs to be in place before the first
     # api_raw/api_json call.
     monkeypatch.setattr(client, "_auth_token", lambda: "fake-token")
+
+
+@pytest.fixture(autouse=True)
+def _no_default_cache(monkeypatch):
+    # The shared default client would otherwise cache into the real ~/.cache.
+    monkeypatch.setenv("ASYNCGH_NO_CACHE", "1")
