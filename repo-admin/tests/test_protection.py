@@ -1672,3 +1672,40 @@ async def test_a_failing_audit_does_not_fail_the_sync(monkeypatch):
     result = await worker(REPO)
     assert result.status == Status.OK
     assert audits == {}
+
+
+def _pull(sha, *, state="open", merged_at=None):
+    return {"head": {"sha": sha}, "state": state, "merged_at": merged_at}
+
+
+async def test_recent_pr_head_shas_skips_closed_unmerged_prs(monkeypatch):
+    pulls = [
+        _pull("abandoned", state="closed"),
+        _pull("merged", state="closed", merged_at="2026-11-22T17:04:04Z"),
+        _pull("open"),
+    ]
+
+    async def fake_api_json(method, path, **kwargs):
+        return pulls
+
+    monkeypatch.setattr(protection, "api_json", fake_api_json)
+    assert await protection._recent_pr_head_shas("hugoh", "upd") == ["merged", "open"]
+
+
+async def test_recent_pr_head_shas_looks_past_abandoned_prs_to_fill_the_sample(
+    monkeypatch,
+):
+    pulls = [_pull(f"abandoned-{i}", state="closed") for i in range(10)] + [
+        _pull(f"merged-{i}", state="closed", merged_at="2026-11-22T00:00:00Z")
+        for i in range(8)
+    ]
+    seen = {}
+
+    async def fake_api_json(method, path, **kwargs):
+        seen.update(kwargs["params"])
+        return pulls[: int(kwargs["params"]["per_page"])]
+
+    monkeypatch.setattr(protection, "api_json", fake_api_json)
+    shas = await protection._recent_pr_head_shas("hugoh", "upd")
+    assert shas == [f"merged-{i}" for i in range(5)]
+    assert int(seen["per_page"]) >= 15
