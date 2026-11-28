@@ -30,7 +30,7 @@ Repository = "https://github.com/hugoh/fleet-tools"
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "pytest-cov>=7"]
 
 [build-system]
-requires = ["hatch-vcs>=0.5", "hatchling", "setuptools-scm<11"]
+requires = ["hatch-vcs>=0.5", "hatchling", "setuptools-scm<10"]
 build-backend = "hatchling.build"
 
 [tool.coverage.run]
