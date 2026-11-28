@@ -32,6 +32,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
 
 - **`repos list`** — lists repos as a table: name, default branch, private,
   fork
+
 - **`repo scaffold PATH [flags]`** — renders a new fleet repo's baseline
   files from [`templates/`](templates/): the shared dev-tooling
   (`hk.pkl`, `mise.toml`, `.renovaterc.json`, editor/lint config, `LICENSE`)
@@ -47,16 +48,19 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   carry no version numbers. Idempotent: existing files are kept (`--force`
   to overwrite), an existing git/jj repo is left as-is. `--dry-run` to
   preview. See `repo scaffold --help` for the full flag list.
+
 - **`features sync [--dry-run]`** — sets issues, wiki, projects and
   discussions from `config/features.yaml`: a `"*"` entry plus optional
   per-repo overrides. Keys the config doesn't name are left alone. The
   Releases/Packages/Deployments sidebar toggles have no API.
+
 - **`watch sync [--dry-run]`** — subscribes you to every repo in scope
   (`PUT /repos/{owner}/{repo}/subscription`), switching "ignored" repos back
   to watching. GitHub then emails new issues, PRs and their comments, provided
   email is enabled for "Watching" at github.com/settings/notifications. That
   setting, and the "Custom: Issues + Pull requests" watch level, have no API.
   Not part of the meta `sync`, since it changes your account, not the repos.
+
 - **`merge sync [--dry-run]`** — enables auto-merge,
   delete-branch-on-merge, and PR-branch auto-update (the last one matters
   because branch protection requires PR branches to be up to date before
@@ -65,6 +69,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   title (`squash_merge_commit_title=PR_TITLE`) and makes squash the only
   merge method for repos where `semantic-pr` is already a required status
   check, so it needs no opt-in list.
+
 - **`protection sync [--dry-run] [--clear-stale-checks]
   [--adopt-renamed-checks]`** — requires status checks to pass and a
   PR (0 approvals needed, no direct pushes) before merging, matching the
@@ -127,6 +132,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   and GitHub-managed ones such as CodeQL, are ignored). Reusable workflows that
   only run via `workflow_call` are not audited: their caller gates them. It
   costs a few extra API calls per repo.
+
 - **`security sync [--dry-run]`** — enables Dependabot vulnerability
   alerts (all repos, free) and disables Dependabot security updates (no
   Dependabot PRs), plus secret
@@ -135,11 +141,13 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   private repos need GitHub Advanced Security, a paid add-on this
   account's plan doesn't include; such repos are reported as unavailable,
   not failed, as are repos with no CodeQL-supported language).
+
 - **`sync [--dry-run]`** — runs `merge sync`, `features sync`, `protection sync`,
   `security sync`, then `pages sync` in sequence, with `merge sync`'s
   squash-title step moved to just after `protection sync` so a repo that
   newly gets `semantic-pr` required is fully set up in one run. One command failing
   doesn't stop the others; the exit code is nonzero if any of them failed.
+
 - **`pages sync [--dry-run] [--enable]`** — sets each repo's GitHub Pages custom
   domain from the repo → domain mapping in `config/pages-domains.yaml` (the
   same file the OpenTofu DNS config reads to generate the matching
@@ -154,16 +162,20 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   failed unless `--enable` is given, which turns Pages on (GitHub Actions
   build) first; the repo still needs a workflow that deploys the site. The
   meta `sync` never passes `--enable`.
+
 - **`pages disable REPO... [--dry-run]`** — deletes the GitHub Pages site
   (and with it the custom domain) of the named repos. Repos must already be
   removed from `config/pages-domains.yaml`, since `pages sync` would
   otherwise reinstate them; naming a mapped repo is an error.
+
 - **`pages unset-url REPO... [--dry-run]`** — clears the named repos'
   homepage URL, which `pages sync` had pointed at the custom domain. Same
   unmapped-only rule as `pages disable`.
+
 - **`pages status`** — read-only: lists every repo with GitHub Pages enabled
   and its current custom domain/HTTPS state and homepage URL, flagging any
   that aren't yet in `config/pages-domains.yaml`.
+
 - **`pages config --domain <domain>`** — prints
   `config/pages-domains.yaml`-formatted entries to stdout: `<repo>.<domain>`
   per repo, dots in the repo name replaced with dashes (e.g.
@@ -172,6 +184,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   for exactly those with no API calls; with none, auto-discovers repos with
   Pages enabled but missing from `config/pages-domains.yaml` (the same set
   `pages status` flags) and suggests entries for those.
+
 - **`secrets sync [--dry-run] [--secret name1,name2]`** — pushes GitHub
   Actions secrets to each target repo via GitHub's REST API, encrypting each
   value in-process with PyNaCl for the target repo's public key — the
@@ -197,11 +210,13 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   detection — `--dry-run` just reports which repos would receive each
   secret (it still decrypts, since the mapping is encrypted too). Decrypting
   requires `sops` on `PATH` with access to the shared age key.
+
 - **`secrets edit`** — opens `config/secrets.enc.yaml` in `sops` for
   interactive editing (decrypts to `$EDITOR`, re-encrypts on save). When the
   file doesn't exist yet it's seeded with a one-entry example to fill in
   instead of hand-writing sops' metadata block. After editing, warns
   (doesn't fail) if a binding is malformed.
+
 - **`variables sync`** / **`variables edit`** — like the two `secrets`
   commands, operating on `config/variables.yaml` + `config/variables.enc.yaml`
   and GitHub's Actions *variables* API (`lib.set_repo_variable`,
@@ -209,6 +224,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   variable-name → target-repo map stays in the clear in
   `config/variables.yaml`; only the values are sops-encrypted. `--variable`
   narrows which names to sync.
+
 - **`config bootstrap REPO`** — first-run helper for a repo. Reads which
   `secrets.*` / `vars.*` its `.github/workflows/` reference (fetched from
   GitHub, so the list can't drift from the workflow file), binds `REPO` in
@@ -220,6 +236,7 @@ uv run repo_admin.py <resource> <verb> [repo ...] \
   `secrets sync` / `variables sync` commands to run next. Replaces the old
   per-repo
   `setup-config.py` bootstrap scripts.
+
 - **`activity`** — reports recent commit activity per repo, ranked by an
   exponential recency-decay score. See `activity.py`'s header comment.
 
