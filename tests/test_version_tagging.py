@@ -2,8 +2,7 @@
 
 Each package derives its version from `<pkg>-v*` tags in a shared repo. A
 build-system upgrade (e.g. setuptools-scm 10 with hatch-vcs 0.4) can silently
-pick another package's newer tag instead. setuptools-scm 10 also reads
-jj-colocated checkouts through jj, ignoring `git_describe_command`.
+pick another package's newer tag instead.
 """
 
 import shutil
@@ -22,9 +21,8 @@ def run(*cmd: str, cwd: Path) -> str:
     ).stdout
 
 
-@pytest.mark.parametrize("vcs", ["git", "jj"])
 @pytest.mark.parametrize("pkg", PACKAGES)
-def test_version_comes_from_own_tag(pkg: str, vcs: str, tmp_path: Path) -> None:
+def test_version_comes_from_own_tag(pkg: str, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / pkg / "src" / pkg).mkdir(parents=True)
     shutil.copy(ROOT / pkg / "pyproject.toml", repo / pkg / "pyproject.toml")
@@ -49,8 +47,6 @@ def test_version_comes_from_own_tag(pkg: str, vcs: str, tmp_path: Path) -> None:
     run("git", "tag", f"{pkg}-v1.2.3", cwd=repo)
     run(*commit, cwd=repo)
     run("git", "tag", "other-v9.9.9", cwd=repo)
-    if vcs == "jj":
-        run("jj", "git", "init", "--colocate", cwd=repo)
 
     out = tmp_path / "dist"
     run("uv", "build", "--wheel", "--out-dir", str(out), pkg, cwd=repo)

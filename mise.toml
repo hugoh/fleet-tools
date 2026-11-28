@@ -1,6 +1,5 @@
 [tools]
 hk = "2.14.0"
-jj = "0.47.1"
 uv = "0.13.8"
 jactionlint = "2.6.0"
 pinact = "5.0.2"
@@ -61,3 +60,7 @@ run = "uv run --with pdoc pdoc reconcilekit --output-directory ../public/reconci
 description = "Build repokit's API docs"
 dir = "repokit"
 run = "uv run --with pdoc pdoc repokit --output-directory ../public/repokit"
+
+[env]
+# https://setuptools-scm.readthedocs.io/latest/usage/#jujutsu-jj-repositories
+SETUPTOOLS_SCM_DISABLE_JJ = "1"
